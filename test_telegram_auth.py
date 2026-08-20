@@ -25,7 +25,7 @@ def telegram_init_data(user_id=123456789, first_name="Test", auth_date=None):
 
 
 def setup_function():
-    app.config.update(TESTING=True)
+    app.config.update(TESTING=True, RATELIMIT_ENABLED=False)
     with app.app_context():
         db.drop_all()
         db.create_all()
