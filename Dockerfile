@@ -1,10 +1,11 @@
 FROM python:3.12-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8765
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 COPY . .
-RUN mkdir -p /app/media && useradd --create-home --uid 10001 prime && chown -R prime:prime /app
+RUN useradd --create-home --uid 10001 prime && mkdir -p /app/media && chown -R prime:prime /app
+RUN chmod +x /app/start_prod.sh
 USER prime
 EXPOSE 8765
-CMD ["gunicorn", "--bind", "0.0.0.0:8765", "--workers", "2", "--threads", "4", "--timeout", "60", "server:app"]
+CMD ["/app/start_prod.sh"]
