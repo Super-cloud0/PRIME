@@ -1,0 +1,3 @@
+# PRIME database migrations
+
+This directory is managed by Alembic/Flask-Migrate. Production startup runs `flask --app server_prod db upgrade` before Gunicorn.
