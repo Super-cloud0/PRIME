@@ -21,6 +21,7 @@ services:
       DATABASE_URL: postgresql+psycopg://prime:${POSTGRES_PASSWORD}@db:5432/prime
       PRIME_JWT_SECRET: ${PRIME_JWT_SECRET:?set PRIME_JWT_SECRET}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       PRIME_MEDIA_ROOT: /app/media
     ports:
