@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-prime}
+      POSTGRES_USER: ${POSTGRES_USER:-prime}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-prime} -d ${POSTGRES_DB:-prime}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-prime}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-prime}
+      PRIME_JWT_SECRET: ${PRIME_JWT_SECRET:?set PRIME_JWT_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      PRIME_MEDIA_ROOT: /app/media
+      RATELIMIT_STORAGE_URI: memory://
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8765:8765"
+    volumes:
+      - prime_media:/app/media
+
+volumes:
+  postgres_data:
+  prime_media:
