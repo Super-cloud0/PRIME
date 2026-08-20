@@ -1,0 +1,156 @@
+name: Fix production Face AI
+
+on:
+  push:
+    branches: [feature/production-architecture]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch server_prod Face AI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('server_prod.py')
+          s = p.read_text(encoding='utf-8')
+          marker = '# PRIME_PROD_FACE_AI_V3'
+          if marker in s:
+              print('Patch already installed')
+              raise SystemExit(0)
+
+          start = s.index('def gemini_json(')
+          end = s.index('\n\n@app.post("/api/face-ai")', start)
+          new_gemini = r'''def gemini_json(prompt: str, image_b64: str | None = None, mime: str = "image/jpeg"):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured on Render")
+    parts = [{"text": prompt}]
+    if image_b64:
+        parts.append({"inline_data": {"mime_type": mime, "data": image_b64}})
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1600, "responseMimeType": "application/json"},
+    }
+    models = []
+    for model in (GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.5-flash-lite"):
+        model = str(model or "").strip()
+        if model and model not in models:
+            models.append(model)
+    last_error = "unknown Gemini error"
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        try:
+            response = requests.post(
+                url,
+                headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+            if not response.ok:
+                try:
+                    err = response.json().get("error", {})
+                    last_error = f"Gemini {response.status_code}: {err.get('message', response.text[:300])}"
+                except Exception:
+                    last_error = f"Gemini {response.status_code}: {response.text[:300]}"
+                if response.status_code in (400, 404):
+                    continue
+                raise RuntimeError(last_error)
+            body = response.json()
+            text = "".join(
+                part.get("text", "")
+                for candidate in body.get("candidates", [])
+                for part in candidate.get("content", {}).get("parts", [])
+                if isinstance(part, dict)
+            )
+            if not text:
+                last_error = "Gemini returned no text"
+                continue
+            return extract_json(text)
+        except requests.RequestException as exc:
+            last_error = f"Gemini request failed: {type(exc).__name__}"
+    raise RuntimeError(last_error)
+'''
+          s = s[:start] + new_gemini + s[end:]
+
+          start = s.index('@app.post("/api/face-ai")')
+          end = s.index('\n\n@app.get("/api/face/history")', start)
+          new_face = r'''@app.post("/api/face-ai")
+@auth_required
+@limiter.limit("10 per minute")
+def face_ai(user):
+    data = request.get_json(silent=True) or {}
+    image_b64 = data.get("image")
+    if not image_b64 or not isinstance(image_b64, str):
+        return jsonify({"error": "image is required"}), 400
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except Exception:
+        return jsonify({"error": "invalid image"}), 400
+    if len(raw) > 8 * 1024 * 1024:
+        return jsonify({"error": "image too large"}), 413
+    mime = str(data.get("mime") or "image/jpeg").lower().split(";")[0].strip()
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        mime = "image/jpeg"
+    prompt = """You are PRIME's STRICT visual presentation evaluator.
+Analyze ONLY visible, non-sensitive appearance/presentation characteristics in THIS photo.
+Do not identify the person. Do not infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, gender identity, or other sensitive traits. Do not diagnose. Do not sexualize.
+Be genuinely strict and calibrated. Do not give a high score merely because of flattering lighting. 90+ is rare. Most ordinary good photos should land around 55-80.
+Evaluate only visible evidence: grooming, hairstyle, skin appearance, visually observable symmetry, facial proportion/harmony, lighting, angle, image quality, and overall presentation. Do not invent flaws.
+Calibration: 0-39 major visible problems; 40-54 weak; 55-64 below/around average; 65-74 solid; 75-84 clearly strong; 85-89 excellent and uncommon; 90-100 exceptional and very uncommon.
+Return ONLY valid JSON with exactly these keys: score, type, summary, metrics, tips, confidence.
+metrics MUST contain exactly: symmetry, proportion, grooming, hair, skin_appearance, presentation. All numeric values are integers 0-100.
+type must be one of SUB 5, MTN, HTN, LTN, CHAD.
+tips must contain 3-5 practical, safe, non-medical suggestions tied to visible weaknesses.
+confidence is confidence in visible evidence, 0-100.
+"""
+    try:
+        result = gemini_json(prompt, base64.b64encode(raw).decode("ascii"), mime)
+        score = max(0, min(100, int(result.get("score", 0))))
+        required = ["symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"]
+        source_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        metrics = {}
+        for key in required:
+            try:
+                metrics[key] = max(0, min(100, int(source_metrics.get(key, 0))))
+            except (TypeError, ValueError):
+                metrics[key] = 0
+        tips = [str(v).strip()[:300] for v in (result.get("tips") or []) if str(v).strip()][:5]
+        confidence = max(0, min(100, int(result.get("confidence", 0))))
+        analysis = FaceAnalysis(
+            id=str(uuid.uuid4()), user_id=user.id, score=score,
+            analysis_type=str(result.get("type", "HTN"))[:20],
+            summary=str(result.get("summary", "Analysis completed."))[:2000],
+            metrics_json=json.dumps(metrics, ensure_ascii=False),
+            tips_json=json.dumps(tips, ensure_ascii=False), confidence=confidence,
+        )
+        user.prime_score = score
+        db.session.add(analysis)
+        db.session.commit()
+        return jsonify({"score": score, "type": analysis.analysis_type, "summary": analysis.summary, "metrics": metrics, "tips": tips, "confidence": confidence, "analysis_id": analysis.id})
+    except RuntimeError as exc:
+        app.logger.error("PRIME face AI runtime error: %s", exc)
+        return jsonify({"error": f"AI analysis failed: {exc}"}), 502
+    except requests.RequestException as exc:
+        app.logger.error("PRIME face AI request error: %s", exc)
+        return jsonify({"error": "AI service temporarily unavailable"}), 502
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("PRIME face AI unexpected error")
+        return jsonify({"error": f"AI analysis failed: {type(exc).__name__}: {exc}"}), 502
+
+# PRIME_PROD_FACE_AI_V3
+'''
+          s = s[:start] + new_face + s[end:]
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server_prod.py
+          git diff --cached --quiet || git commit -m "fix production Face AI Gemini handling"
+          git push
