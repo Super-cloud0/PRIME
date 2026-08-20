@@ -179,9 +179,8 @@ def telegram_webhook():
     return jsonify({"ok": True})
 
 
-# Production Gemini vision implementation.
-# This replaces the old server_prod handler at runtime, so Render's
-# gunicorn server:app entrypoint always uses this implementation.
+# Production Gemini vision implementation. This is intentionally installed
+# into the server_prod route below because Render starts gunicorn as server:app.
 def _gemini_json_compat(prompt: str, image_b64: str | None = None, mime: str = "image/jpeg"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -311,8 +310,8 @@ def _face_ai_fixed(user):
         return jsonify({"error": f"AI analysis failed: {type(exc).__name__}: {exc}"}), 502
 
 
-# The production route is registered by server_prod.py. Replace its view
-# function so this handler is used without changing Render's start command.
+# Render uses gunicorn server:app. server.app is imported from server_prod,
+# so replace that endpoint's view function before gunicorn starts serving it.
 server_prod.gemini_json = _gemini_json_compat
 server_prod.app.view_functions["face_ai"] = server_prod.auth_required(_face_ai_fixed)
 
@@ -323,3 +322,5 @@ with app.app_context():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8765")))
+
+# force production Face AI redeploy
