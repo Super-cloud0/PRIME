@@ -154,3 +154,5 @@ confidence is confidence in visible evidence, 0-100.
           git add server_prod.py
           git diff --cached --quiet || git commit -m "fix production Face AI Gemini handling"
           git push
+      - name: Verify workflow
+        run: echo "production face AI patch workflow triggered"
