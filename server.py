@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -178,22 +179,31 @@ def telegram_webhook():
     return jsonify({"ok": True})
 
 
-# Gemini vision compatibility patch.
-# The current Gemini 2.5 Flash / Flash-Lite API no longer needs the old
-# temperature/responseMimeType settings used by the previous implementation.
-# Keep the existing /api/face-ai route, but make its Gemini helper robust.
+# Production Gemini vision implementation.
+# This replaces the old server_prod handler at runtime, so Render's
+# gunicorn server:app entrypoint always uses this implementation.
 def _gemini_json_compat(prompt: str, image_b64: str | None = None, mime: str = "image/jpeg"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("AI service is not configured: GEMINI_API_KEY is missing")
+        raise RuntimeError("GEMINI_API_KEY is missing in Render Environment")
+
+    if image_b64:
+        try:
+            base64.b64decode(image_b64, validate=True)
+        except Exception as exc:
+            raise ValueError(f"server received invalid base64 image: {exc}")
 
     parts = [{"text": prompt}]
     if image_b64:
-        parts.append({"inline_data": {"mime_type": mime if mime.startswith("image/") else "image/jpeg", "data": image_b64}})
+        safe_mime = mime if isinstance(mime, str) and mime.startswith("image/") else "image/jpeg"
+        parts.append({"inline_data": {"mime_type": safe_mime, "data": image_b64}})
 
     payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {"maxOutputTokens": 2048},
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "maxOutputTokens": 2048,
+            "responseMimeType": "application/json",
+        },
     }
 
     configured = os.environ.get("GEMINI_MODEL", "").strip()
@@ -204,37 +214,107 @@ def _gemini_json_compat(prompt: str, image_b64: str | None = None, mime: str = "
 
     errors = []
     for model in models:
-        try:
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-                json=payload,
-                timeout=60,
-            )
-            if response.ok:
-                body = response.json()
-                text = "".join(
-                    part.get("text", "")
-                    for candidate in body.get("candidates", [])
-                    for part in candidate.get("content", {}).get("parts", [])
-                    if isinstance(part, dict)
-                ).strip()
-                if not text:
-                    raise RuntimeError("Gemini returned an empty response")
-                return server_prod.extract_json(text)
-
+        for api_version in ("v1beta", "v1"):
             try:
-                detail = response.json().get("error", {}).get("message", response.text)
-            except Exception:
-                detail = response.text
-            errors.append(f"{model}: HTTP {response.status_code}: {str(detail)[:240]}")
-        except requests.RequestException as exc:
-            errors.append(f"{model}: {type(exc).__name__}: {str(exc)[:180]}")
+                response = requests.post(
+                    f"https://generativelanguage.googleapis.com/{api_version}/models/{model}:generateContent",
+                    headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+                    json=payload,
+                    timeout=60,
+                )
+                if not response.ok:
+                    try:
+                        body = response.json()
+                        detail = body.get("error", {}).get("message", response.text)
+                    except Exception:
+                        detail = response.text
+                    errors.append(f"{model}/{api_version}: HTTP {response.status_code}: {str(detail)[:300]}")
+                    continue
 
-    raise RuntimeError("Gemini request failed; " + " | ".join(errors))
+                body = response.json()
+                candidates = body.get("candidates") or []
+                if not candidates:
+                    prompt_feedback = body.get("promptFeedback") or {}
+                    errors.append(f"{model}/{api_version}: no candidates; promptFeedback={str(prompt_feedback)[:300]}")
+                    continue
+
+                text_parts = []
+                for candidate in candidates:
+                    for part in (candidate.get("content") or {}).get("parts") or []:
+                        if isinstance(part, dict) and isinstance(part.get("text"), str):
+                            text_parts.append(part["text"])
+                text = "".join(text_parts).strip()
+                if not text:
+                    finish = [c.get("finishReason") for c in candidates]
+                    errors.append(f"{model}/{api_version}: empty text; finishReason={finish}")
+                    continue
+
+                try:
+                    return server_prod.extract_json(text)
+                except Exception as exc:
+                    errors.append(f"{model}/{api_version}: invalid JSON from model: {exc}; raw={text[:500]}")
+            except requests.RequestException as exc:
+                errors.append(f"{model}/{api_version}: network error {type(exc).__name__}: {str(exc)[:220]}")
+
+    raise RuntimeError("Gemini request failed: " + " | ".join(errors))
 
 
+def _face_ai_fixed(user):
+    data = request.get_json(silent=True) or {}
+    image_b64 = data.get("image")
+    if not image_b64 or not isinstance(image_b64, str):
+        return jsonify({"error": "image is required"}), 400
+
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except Exception:
+        return jsonify({"error": "invalid image"}), 400
+    if len(raw) > 8 * 1024 * 1024:
+        return jsonify({"error": "image too large"}), 413
+
+    prompt = """You are PRIME's strict visual self-improvement coach. Analyze only visible, non-sensitive presentation features in the supplied photo. Never identify the person and never infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, or other sensitive traits. Do not diagnose or sexualize. Be strict and honest: do not inflate scores. Judge visible presentation quality against a demanding adult grooming/style standard. Return ONLY valid JSON with this exact shape: {score: integer 0-100, type: string, summary: string, metrics: {symmetry: integer, proportion: integer, grooming: integer, hair: integer, skin_appearance: integer, presentation: integer}, tips: [string, ...], confidence: integer 0-100}. All metric values and score must be integers. Give 3-5 practical, safe improvement tips. If the face is not clearly visible, set confidence <=20 and do not invent observations."""
+
+    try:
+        result = _gemini_json_compat(prompt, base64.b64encode(raw).decode("ascii"), data.get("mime", "image/jpeg"))
+        score = max(0, min(100, int(result.get("score", 0))))
+        source_metrics = result.get("metrics") or {}
+        metrics = {
+            key: max(0, min(100, int(value)))
+            for key, value in source_metrics.items()
+            if key in {"symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"}
+            and isinstance(value, (int, float))
+        }
+        tips = [str(value)[:300] for value in (result.get("tips") or [])[:5]]
+        confidence = max(0, min(100, int(result.get("confidence", 0))))
+        analysis = server_prod.FaceAnalysis(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            score=score,
+            analysis_type=str(result.get("type", "HTN"))[:20],
+            summary=str(result.get("summary", ""))[:2000],
+            metrics_json=json.dumps(metrics),
+            tips_json=json.dumps(tips),
+            confidence=confidence,
+        )
+        user.prime_score = score
+        db.session.add(analysis)
+        db.session.commit()
+        result.update({"score": score, "metrics": metrics, "tips": tips, "confidence": confidence, "analysis_id": analysis.id})
+        return jsonify(result)
+    except requests.RequestException as exc:
+        db.session.rollback()
+        app.logger.exception("Face AI request failed")
+        return jsonify({"error": f"AI service temporarily unavailable: {type(exc).__name__}: {exc}"}), 502
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("Face AI analysis failed")
+        return jsonify({"error": f"AI analysis failed: {type(exc).__name__}: {exc}"}), 502
+
+
+# The production route is registered by server_prod.py. Replace its view
+# function so this handler is used without changing Render's start command.
 server_prod.gemini_json = _gemini_json_compat
+server_prod.app.view_functions["face_ai"] = server_prod.auth_required(_face_ai_fixed)
 
 
 with app.app_context():
