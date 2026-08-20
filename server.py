@@ -5,12 +5,11 @@ import hmac
 import json
 import os
 import time
+import uuid
 from urllib.parse import parse_qsl
 
 from flask import jsonify, request
 
-# Production app and models live in server_prod.py. This thin entrypoint keeps
-# the existing API/UI while adding Telegram Mini App authentication.
 from server_prod import User, app, db, jwt_encode
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -58,8 +57,6 @@ def telegram_auth():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 401
 
-    # The Telegram numeric ID is the account identity. We keep the existing
-    # schema unchanged by using an internal, non-user-facing email key.
     telegram_id = str(tg_user["id"])
     account_key = f"tg_{telegram_id}@telegram.local"
     user = User.query.filter_by(email=account_key).first()
@@ -67,7 +64,7 @@ def telegram_auth():
     display_name = display_name[:50] or str(tg_user.get("username") or "PRIME USER")[:50]
 
     if user is None:
-        user = User(email=account_key, password_hash=None, name=display_name)
+        user = User(id=str(uuid.uuid4()), email=account_key, password_hash=None, name=display_name)
         db.session.add(user)
     else:
         user.name = display_name
