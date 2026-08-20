@@ -9,7 +9,7 @@ from server_prod import app, db
 
 
 def setup_function():
-    app.config.update(TESTING=True)
+    app.config.update(TESTING=True, RATELIMIT_ENABLED=False)
     with app.app_context():
         db.drop_all()
         db.create_all()
