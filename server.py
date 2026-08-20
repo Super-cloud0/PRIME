@@ -12,6 +12,7 @@ from urllib.parse import parse_qsl
 import requests
 from flask import jsonify, request
 
+import server_prod
 from server_prod import User, app, db, jwt_encode, password_hash
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -175,6 +176,65 @@ def telegram_webhook():
     except Exception:
         app.logger.exception("Telegram webhook outbound request failed")
     return jsonify({"ok": True})
+
+
+# Gemini vision compatibility patch.
+# The current Gemini 2.5 Flash / Flash-Lite API no longer needs the old
+# temperature/responseMimeType settings used by the previous implementation.
+# Keep the existing /api/face-ai route, but make its Gemini helper robust.
+def _gemini_json_compat(prompt: str, image_b64: str | None = None, mime: str = "image/jpeg"):
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("AI service is not configured: GEMINI_API_KEY is missing")
+
+    parts = [{"text": prompt}]
+    if image_b64:
+        parts.append({"inline_data": {"mime_type": mime if mime.startswith("image/") else "image/jpeg", "data": image_b64}})
+
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"maxOutputTokens": 2048},
+    }
+
+    configured = os.environ.get("GEMINI_MODEL", "").strip()
+    models = []
+    for model in [configured, "gemini-2.5-flash-lite", "gemini-2.5-flash"]:
+        if model and model not in models:
+            models.append(model)
+
+    errors = []
+    for model in models:
+        try:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+                json=payload,
+                timeout=60,
+            )
+            if response.ok:
+                body = response.json()
+                text = "".join(
+                    part.get("text", "")
+                    for candidate in body.get("candidates", [])
+                    for part in candidate.get("content", {}).get("parts", [])
+                    if isinstance(part, dict)
+                ).strip()
+                if not text:
+                    raise RuntimeError("Gemini returned an empty response")
+                return server_prod.extract_json(text)
+
+            try:
+                detail = response.json().get("error", {}).get("message", response.text)
+            except Exception:
+                detail = response.text
+            errors.append(f"{model}: HTTP {response.status_code}: {str(detail)[:240]}")
+        except requests.RequestException as exc:
+            errors.append(f"{model}: {type(exc).__name__}: {str(exc)[:180]}")
+
+    raise RuntimeError("Gemini request failed; " + " | ".join(errors))
+
+
+server_prod.gemini_json = _gemini_json_compat
 
 
 with app.app_context():
