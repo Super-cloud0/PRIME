@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#090909">
+<title>PRIME MVP</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <button id="menu" class="ghost">☰</button>
+    <div class="logo">♛ PRIME</div>
+    <button id="musicTop" class="ghost">♫</button>
+  </header>
+
+  <main id="home" class="view active">
+    <div class="hero">
+      <div class="eyebrow">YOUR PRIME SCORE</div>
+      <div id="primeScore" class="score">--</div>
+      <div id="rankLabel" class="rank-label">ANALYZE YOUR PHOTO</div>
+      <div class="elo-line">FACE ELO <b id="elo">1000</b></div>
+      <button id="goFace" class="primary">📸 ОЦЕНИТЬ ВНЕШНОСТЬ</button>
+    </div>
+
+    <section class="card">
+      <div class="section-title"><span>Что сейчас</span><small>3 функции MVP</small></div>
+      <button class="row" data-go="face">📸 <span><b>Оценка по фото</b><small>Score + reference type</small></span><i>›</i></button>
+      <button class="row" data-go="music">🎵 <span><b>Mogger Music</b><small>Добавляй свои треки</small></span><i>›</i></button>
+      <button class="row" data-go="advice">🧠 <span><b>Советы</b><small>Пока базовые, AI подключим позже</small></span><i>›</i></button>
+    </section>
+
+    <section class="card mini">
+      <b>PRIME MVP</b>
+      <p>Сейчас не перегружаем приложение. Проверяем, нравится ли людям сам core loop: фото → score → Elo → музыка → советы.</p>
+    </section>
+  </main>
+
+  <main id="face" class="view">
+    <button class="back" data-go="home">‹ Назад</button>
+    <div class="eyebrow">FACE ANALYSIS</div>
+    <h1>Оценка внешности</h1>
+    <p class="muted">Это развлекательная визуальная оценка, не медицинский или научный диагноз. Для нормального результата используй селфи анфас при хорошем свете.</p>
+
+    <div class="card upload-card">
+      <input id="photoInput" type="file" accept="image/*" hidden>
+      <button id="pickPhoto" class="upload">
+        <span>＋</span>
+        <b>Выбрать фото</b>
+        <small>JPG / PNG</small>
+      </button>
+      <img id="preview" class="preview hidden" alt="preview">
+    </div>
+
+    <div id="faceStatus" class="status">Готов к анализу</div><button id="analyze" class="primary" disabled>АНАЛИЗИРОВАТЬ</button>
+    <div id="faceResult" class="hidden">
+      <div class="score-card">
+        <div class="eyebrow">YOUR VISUAL SCORE</div>
+        <div id="faceScore" class="big-score">--</div>
+        <div id="type" class="type">--</div>
+        <p id="typeText" class="muted"></p>
+      </div>
+      <div id="metrics" class="card"></div>
+      <div class="card">
+        <div class="section-title"><span>Reference scale</span><small>твоя позиция</small></div>
+        <div class="scale">
+          <span>SUB 3</span><span>SUB 5</span><span>MTN</span><span>HTN</span><span>LTN</span><span>CHAD</span>
+        </div>
+        <div class="scale-bar"><i id="scalePos"></i></div>
+      </div>
+      <div class="card">
+        <div class="section-title"><span>Следующие шаги</span><small>база</small></div>
+        <ul id="tips"></ul>
+      </div>
+      <button id="addElo" class="secondary">⚔ СЫГРАТЬ ELO-МАТЧ</button>
+    </div>
+  </main>
+
+  <main id="music" class="view">
+    <button class="back" data-go="home">‹ Назад</button>
+    <div class="eyebrow">MOGGER MODE</div>
+    <h1>Музыка</h1>
+    <p class="muted">Добавляй любые свои аудиофайлы. Они сохраняются локально на этом устройстве.</p>
+    <div class="player card">
+      <div class="cover">♛</div>
+      <div id="nowPlaying" class="now">Ничего не играет</div>
+      <input id="seek" type="range" min="0" max="100" value="0">
+      <div class="controls"><button id="prev">⏮</button><button id="play" class="play">▶</button><button id="next">⏭</button></div>
+    </div>
+    <button id="addMusic" class="primary">＋ ДОБАВИТЬ ТРЕКИ</button>
+    <input id="musicInput" type="file" accept="audio/*" multiple hidden>
+    <div id="songs" class="songs"></div>
+  </main>
+
+  <main id="advice" class="view">
+    <button class="back" data-go="home">‹ Назад</button>
+    <div class="eyebrow">COACH</div>
+    <h1>Советы</h1>
+    <p class="muted">AI подключим после проверки идеи. Пока — короткие безопасные рекомендации.</p>
+    <div class="card advice-list">
+      <div><b>Сон</b><span>Стабильный график сна чаще даёт больше результата, чем очередной «hack».</span></div>
+      <div><b>Тренировки</b><span>Сделай 3–4 стабильные тренировки в неделю вместо идеального плана на один день.</span></div>
+      <div><b>Стиль</b><span>Начни с посадки одежды, чистых цветов и ухода — это проще всего исправить.</span></div>
+      <div><b>Фото</b><span>Для повторного анализа используй похожее освещение и ракурс, чтобы сравнение было честнее.</span></div>
+    </div>
+    <button class="secondary" id="resetAdvice">ПОНЯЛ</button>
+  </main>
+
+  <nav class="nav">
+    <button data-go="home" class="active">⌂<small>Главная</small></button>
+    <button data-go="face">◉<small>Face</small></button>
+    <button data-go="music">♫<small>Music</small></button>
+    <button data-go="advice">🧠<small>Advice</small></button>
+  </nav>
+</div>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
