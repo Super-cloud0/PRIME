@@ -81,5 +81,11 @@ def telegram_auth():
     }})
 
 
+# The first release uses SQLAlchemy's schema creation on startup so the MVP
+# can boot cleanly on a fresh PostgreSQL instance without a migration step.
+with app.app_context():
+    db.create_all()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8765")))
