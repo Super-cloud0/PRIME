@@ -8,6 +8,8 @@ import uuid
 
 from flask import jsonify, request
 
+# Register Telegram auth/webhook routes on the same Flask app used by Render.
+import server  # noqa: F401
 from server_prod import FaceAnalysis, app, auth_required, db, extract_json, limiter
 
 
@@ -68,14 +70,13 @@ def gemini_json_strict(prompt: str, image_b64: str, mime: str) -> dict:
                 return extract_json(text)
             last_error = "Gemini returned no text"
         except requests.RequestException as exc:
-            last_error = f"Gemini request failed: {type(exc).__name__}"
+            last_error = f"Gemini request failed: {type(exc).__name__}: {exc}"
 
     raise RuntimeError(last_error)
 
 
 @app.post("/api/face-ai", endpoint="face_ai_override")
 @auth_required
-@limiter.limit("10 per minute")
 def face_ai_override(user):
     data = request.get_json(silent=True) or {}
     image_b64 = data.get("image")
