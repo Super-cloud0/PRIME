@@ -22,32 +22,32 @@ TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
 
 def validate_telegram_init_data(init_data: str) -> dict:
     if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("Telegram authentication is not configured")
+        raise ValueError("TELEGRAM_BOT_TOKEN is missing in Render Environment")
     if not init_data or len(init_data) > 8192:
-        raise ValueError("invalid Telegram init data")
+        raise ValueError("Telegram initData is empty or invalid")
 
     fields = dict(parse_qsl(init_data, keep_blank_values=True))
     received_hash = fields.pop("hash", "")
     if not received_hash or "user" not in fields or "auth_date" not in fields:
-        raise ValueError("invalid Telegram init data")
+        raise ValueError("Telegram initData is missing hash, user or auth_date")
 
     data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(fields.items()))
     secret_key = hmac.new(b"WebAppData", TELEGRAM_BOT_TOKEN.encode(), hashlib.sha256).digest()
     expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected_hash, received_hash):
-        raise ValueError("invalid Telegram signature")
+        raise ValueError("invalid Telegram signature — check that TELEGRAM_BOT_TOKEN is the same token used by the bot")
 
     try:
         auth_date = int(fields["auth_date"])
     except (TypeError, ValueError):
-        raise ValueError("invalid auth date")
+        raise ValueError("invalid Telegram auth_date")
     if abs(int(time.time()) - auth_date) > TELEGRAM_AUTH_MAX_AGE:
-        raise ValueError("Telegram authorization expired")
+        raise ValueError("Telegram authorization expired — reopen PRIME from the bot")
 
     try:
         user = json.loads(fields["user"])
     except json.JSONDecodeError:
-        raise ValueError("invalid Telegram user data")
+        raise ValueError("invalid Telegram user JSON")
     if not user.get("id"):
         raise ValueError("Telegram user id missing")
     return user
@@ -57,38 +57,49 @@ def validate_telegram_init_data(init_data: str) -> dict:
 def telegram_auth():
     try:
         payload = request.get_json(silent=True) or {}
-        tg_user = validate_telegram_init_data(str(payload.get("initData", "")))
+        init_data = str(payload.get("initData", ""))
+        if not init_data:
+            init_data = request.headers.get("X-Telegram-Init-Data", "")
+        tg_user = validate_telegram_init_data(init_data)
+
+        telegram_id = str(tg_user["id"])
+        account_key = f"tg_{telegram_id}@telegram.local"
+        user = User.query.filter_by(email=account_key).first()
+        display_name = " ".join(filter(None, [tg_user.get("first_name"), tg_user.get("last_name")])).strip()
+        display_name = display_name[:50] or str(tg_user.get("username") or "PRIME USER")[:50]
+
+        if user is None:
+            user = User(
+                id=str(uuid.uuid4()),
+                email=account_key,
+                password_hash=password_hash(secrets.token_urlsafe(32)),
+                name=display_name,
+            )
+            db.session.add(user)
+        else:
+            user.name = display_name
+
+        db.session.commit()
+        token = jwt_encode(user.id)
+        return jsonify({"token": token, "user": {
+            "id": user.id,
+            "name": user.name,
+            "elo": user.elo,
+            "prime_score": user.prime_score,
+            "wins": user.wins,
+            "losses": user.losses,
+            "games": user.games,
+        }})
     except ValueError as exc:
+        db.session.rollback()
         return jsonify({"error": str(exc)}), 401
-
-    telegram_id = str(tg_user["id"])
-    account_key = f"tg_{telegram_id}@telegram.local"
-    user = User.query.filter_by(email=account_key).first()
-    display_name = " ".join(filter(None, [tg_user.get("first_name"), tg_user.get("last_name")])).strip()
-    display_name = display_name[:50] or str(tg_user.get("username") or "PRIME USER")[:50]
-
-    if user is None:
-        # Telegram-only accounts still satisfy the DB password constraint.
-        user = User(
-            id=str(uuid.uuid4()),
-            email=account_key,
-            password_hash=password_hash(secrets.token_urlsafe(32)),
-            name=display_name,
-        )
-        db.session.add(user)
-    else:
-        user.name = display_name
-    db.session.commit()
-
-    return jsonify({"token": jwt_encode(user.id), "user": {
-        "id": user.id,
-        "name": user.name,
-        "elo": user.elo,
-        "prime_score": user.prime_score,
-        "wins": user.wins,
-        "losses": user.losses,
-        "games": user.games,
-    }})
+    except RuntimeError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 503
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("Telegram authentication failed")
+        return jsonify({"error": f"Telegram auth server error: {type(exc).__name__}: {exc}"}), 500
 
 
 def telegram_api(method: str, payload: dict):
@@ -162,14 +173,10 @@ def telegram_webhook():
         else:
             telegram_send_start(int(chat_id), first_name)
     except Exception:
-        # Telegram retries failed webhooks; acknowledge the update so one bad
-        # outbound request does not cause an endless retry loop.
-        pass
+        app.logger.exception("Telegram webhook outbound request failed")
     return jsonify({"ok": True})
 
 
-# The first release uses SQLAlchemy's schema creation on startup so the MVP
-# can boot cleanly on a fresh PostgreSQL instance without a migration step.
 with app.app_context():
     db.create_all()
 
