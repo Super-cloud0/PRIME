@@ -3,12 +3,14 @@ import os
 os.environ["PRIME_JWT_SECRET"] = "test-secret-please-change"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["TELEGRAM_BOT_TOKEN"] = "123456:TEST_TOKEN"
 
 from server import app, db, User
 
 
 def setup_function():
     app.config["TESTING"] = True
+    app.config["RATELIMIT_ENABLED"] = False
     with app.app_context():
         db.drop_all()
         db.create_all()
