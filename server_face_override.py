@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import os
-import requests
+import time
 import uuid
 
+import requests
 from flask import jsonify, request
 
 # Register Telegram auth/webhook routes on the same Flask app used by Render.
@@ -42,35 +43,62 @@ def gemini_json_strict(prompt: str, image_b64: str, mime: str) -> dict:
     last_error = "unknown Gemini error"
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        try:
-            response = requests.post(
-                url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=60,
-            )
-            if not response.ok:
-                try:
-                    error = response.json().get("error", {})
-                    last_error = f"Gemini {response.status_code}: {error.get('message', response.text[:300])}"
-                except Exception:
-                    last_error = f"Gemini {response.status_code}: {response.text[:300]}"
-                if response.status_code in (400, 404):
-                    continue
-                raise RuntimeError(last_error)
+        for attempt in range(2):
+            try:
+                # Use the documented API-key query parameter. This also avoids
+                # proxy/header handling issues on some hosted environments.
+                response = requests.post(
+                    url,
+                    params={"key": api_key},
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=60,
+                )
 
-            body = response.json()
-            text = "".join(
-                part.get("text", "")
-                for candidate in body.get("candidates", [])
-                for part in candidate.get("content", {}).get("parts", [])
-                if isinstance(part, dict)
-            )
-            if text.strip():
-                return extract_json(text)
-            last_error = "Gemini returned no text"
-        except requests.RequestException as exc:
-            last_error = f"Gemini request failed: {type(exc).__name__}: {exc}"
+                if not response.ok:
+                    try:
+                        error = response.json().get("error", {})
+                        message = error.get("message") or response.text[:500]
+                    except Exception:
+                        message = response.text[:500]
+                    last_error = f"Gemini {response.status_code}: {message}"
+
+                    # Invalid model/request: try the next model.
+                    if response.status_code in (400, 404):
+                        break
+                    # Temporary quota/server/network condition: retry once,
+                    # then try the next configured fallback model.
+                    if response.status_code in (429, 500, 502, 503, 504):
+                        if attempt == 0:
+                            time.sleep(1.5)
+                            continue
+                        break
+                    raise RuntimeError(last_error)
+
+                body = response.json()
+                text = "".join(
+                    part.get("text", "")
+                    for candidate in body.get("candidates", [])
+                    for part in candidate.get("content", {}).get("parts", [])
+                    if isinstance(part, dict)
+                )
+                if not text.strip():
+                    feedback = body.get("promptFeedback") or {}
+                    reason = feedback.get("blockReason") or "no text returned"
+                    last_error = f"Gemini returned no analysis ({reason})"
+                    break
+
+                result = extract_json(text)
+                if not isinstance(result, dict):
+                    raise RuntimeError("Gemini returned invalid JSON object")
+                return result
+
+            except requests.RequestException as exc:
+                last_error = f"Gemini request failed: {type(exc).__name__}: {exc}"
+                if attempt == 0:
+                    time.sleep(1.5)
+                    continue
+                break
 
     raise RuntimeError(last_error)
 
@@ -82,6 +110,11 @@ def face_ai_override(user):
     image_b64 = data.get("image")
     if not image_b64 or not isinstance(image_b64, str):
         return jsonify({"error": "image is required"}), 400
+
+    # Accept either raw base64 or a data URL, so the backend is robust to
+    # different Telegram/browser clients.
+    if image_b64.startswith("data:") and "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
 
     try:
         raw = base64.b64decode(image_b64, validate=True)
@@ -98,7 +131,7 @@ def face_ai_override(user):
 Analyze ONLY visible, non-sensitive appearance and presentation characteristics in THIS photo.
 Do not identify the person. Do not infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, gender identity, or other sensitive traits. Do not diagnose. Do not sexualize.
 Be genuinely strict and calibrated. Do not give a high score merely because of flattering lighting. 90+ is rare. Most ordinary good photos should land around 55-80.
-Evaluate only visible evidence: grooming, hairstyle, skin appearance, visually observable symmetry, facial proportion/harmony, lighting, angle, image quality, and overall presentation. Do not invent flaws.
+Evaluate only visible evidence: grooming, hairstyle, visible skin presentation, visually observable symmetry, facial proportion/harmony, lighting, angle, image quality, and overall presentation. Do not invent flaws.
 Calibration: 0-39 major visible problems; 40-54 weak; 55-64 below/around average; 65-74 solid; 75-84 clearly strong; 85-89 excellent and uncommon; 90-100 exceptional and very uncommon.
 Return ONLY valid JSON with exactly these keys: score, type, summary, metrics, tips, confidence.
 metrics MUST contain exactly: symmetry, proportion, grooming, hair, skin_appearance, presentation. All numeric values are integers 0-100.
@@ -144,11 +177,13 @@ confidence is confidence in visible evidence, 0-100.
             "analysis_id": analysis.id,
         })
     except RuntimeError as exc:
+        db.session.rollback()
         app.logger.error("PRIME face AI runtime error: %s", exc)
         return jsonify({"error": f"AI analysis failed: {exc}"}), 502
     except requests.RequestException as exc:
+        db.session.rollback()
         app.logger.error("PRIME face AI request error: %s", exc)
-        return jsonify({"error": "AI service temporarily unavailable"}), 502
+        return jsonify({"error": f"AI service temporarily unavailable: {exc}"}), 502
     except Exception as exc:
         db.session.rollback()
         app.logger.exception("PRIME face AI unexpected error")
