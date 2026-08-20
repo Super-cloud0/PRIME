@@ -1,0 +1,163 @@
+name: Fix Face AI
+
+on:
+  push:
+    branches: [feature/production-architecture]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-face-ai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch face AI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('server.py')
+          s = p.read_text(encoding='utf-8')
+          marker = '# PRIME_FACE_AI_V2'
+          if marker in s:
+              print('Face AI patch already installed')
+              raise SystemExit(0)
+          s = s.replace(
+              'from server_prod import User, app, db, jwt_encode, password_hash',
+              'from server_prod import FaceAnalysis, GEMINI_API_KEY, GEMINI_MODEL, User, app, current_user, db, jwt_encode, password_hash'
+          )
+          patch = r'''
+
+# PRIME_FACE_AI_V2
+
+def _prime_face_ai_v2():
+    user = current_user()
+    if not user:
+        return jsonify({"error": "authentication required"}), 401
+    data = request.get_json(silent=True) or {}
+    image_b64 = data.get("image")
+    if not image_b64 or not isinstance(image_b64, str):
+        return jsonify({"error": "image is required"}), 400
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except Exception:
+        return jsonify({"error": "invalid image"}), 400
+    if len(raw) > 8 * 1024 * 1024:
+        return jsonify({"error": "image too large"}), 413
+    mime = str(data.get("mime") or "image/jpeg").lower().split(";")[0].strip()
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        mime = "image/jpeg"
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "GEMINI_API_KEY is not configured on Render"}), 503
+
+    prompt = """
+You are PRIME's STRICT visual presentation evaluator.
+Analyze ONLY visible, non-sensitive appearance/presentation characteristics in the supplied photo.
+Do not identify the person. Do not infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, gender identity, or other sensitive traits. Do not diagnose. Do not sexualize.
+Be genuinely strict and calibrated. Do not give a high score merely because of flattering lighting. 90+ is rare and reserved for an unusually strong presentation across nearly every visible category. Most ordinary good-looking photos should land around 55-80.
+Evaluate only what is visible in THIS PHOTO. Penalize objectively visible issues in grooming, hairstyle, skin appearance, visually observable symmetry, facial proportion/harmony, photo presentation, lighting/angle, and overall grooming/presentation. Do not invent flaws.
+Calibration: 0-39 major visible problems; 40-54 weak; 55-64 below/around average; 65-74 solid; 75-84 clearly strong; 85-89 excellent and uncommon; 90-100 exceptional and very uncommon.
+If the image is blurry, heavily filtered, badly cropped, too dark, or the face is not clearly visible, lower confidence.
+Return ONLY JSON with exactly: score, type, summary, metrics, tips, confidence.
+metrics MUST contain exactly: symmetry, proportion, grooming, hair, skin_appearance, presentation. All numeric values are integers 0-100. confidence is confidence in visible evidence. type must be one of SUB 5, MTN, HTN, LTN, CHAD. summary must state specific visible positives and weaknesses. tips must contain 3-5 practical, safe, non-medical suggestions tied to observed weaknesses.
+""".strip()
+
+    image_data = base64.b64encode(raw).decode("ascii")
+    models = []
+    for model in (GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.5-flash-lite"):
+        model = str(model or "").strip()
+        if model and model not in models:
+            models.append(model)
+    result = None
+    last_error = "unknown Gemini error"
+    for model in models:
+        try:
+            payload = {
+                "contents": [{"role": "user", "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime, "data": image_data}},
+                ]}],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1200},
+            }
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+            if not r.ok:
+                try:
+                    e = r.json().get("error", {})
+                    last_error = f"Gemini {r.status_code}: {e.get('message', r.text[:300])}"
+                except Exception:
+                    last_error = f"Gemini {r.status_code}: {r.text[:300]}"
+                if r.status_code in (400, 404):
+                    continue
+                break
+            body = r.json()
+            text = "".join(
+                part.get("text", "")
+                for candidate in body.get("candidates", [])
+                for part in candidate.get("content", {}).get("parts", [])
+                if isinstance(part, dict)
+            )
+            if not text:
+                last_error = "Gemini returned no text"
+                continue
+            try:
+                result = json.loads(text.strip())
+            except json.JSONDecodeError:
+                a, b = text.find("{"), text.rfind("}")
+                if a < 0 or b < a:
+                    last_error = "Gemini returned invalid JSON"
+                    continue
+                result = json.loads(text[a:b + 1])
+            break
+        except requests.RequestException as exc:
+            last_error = f"Gemini request failed: {type(exc).__name__}"
+        except Exception as exc:
+            last_error = f"Gemini response parsing failed: {type(exc).__name__}: {exc}"
+    if result is None:
+        app.logger.error("Face AI failed: %s", last_error)
+        return jsonify({"error": f"AI analysis failed: {last_error}"}), 502
+
+    try:
+        score = max(0, min(100, int(result.get("score", 0))))
+        keys = ["symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"]
+        source = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        metrics = {}
+        for key in keys:
+            try:
+                metrics[key] = max(0, min(100, int(source.get(key, 0))))
+            except (TypeError, ValueError):
+                metrics[key] = 0
+        tips = [str(x).strip()[:300] for x in (result.get("tips") or []) if str(x).strip()][:5]
+        confidence = max(0, min(100, int(result.get("confidence", 0))))
+        analysis = FaceAnalysis(
+            id=str(uuid.uuid4()), user_id=user.id, score=score,
+            analysis_type=str(result.get("type", "HTN"))[:20],
+            summary=str(result.get("summary", "Analysis completed."))[:2000],
+            metrics_json=json.dumps(metrics, ensure_ascii=False),
+            tips_json=json.dumps(tips, ensure_ascii=False), confidence=confidence,
+        )
+        user.prime_score = score
+        db.session.add(analysis)
+        db.session.commit()
+        return jsonify({"score": score, "type": analysis.analysis_type, "summary": analysis.summary, "metrics": metrics, "tips": tips, "confidence": confidence, "analysis_id": analysis.id})
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("Face AI result save failed")
+        return jsonify({"error": f"AI result save failed: {type(exc).__name__}: {exc}"}), 500
+
+app.view_functions["face_ai"] = _prime_face_ai_v2
+'''
+          s += patch
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server.py
+          git diff --cached --quiet || git commit -m "fix face AI analysis"
+          git push
