@@ -1,7 +1,5 @@
 """Production entrypoint for Render with strict PRIME trend calibration."""
 
-import base64
-import json
 import math
 import os
 
@@ -17,12 +15,62 @@ import server_prod
 server_prod.GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
 
 
+STRICT_FACE_PROMPT = """
+You are the STRICT PRIME visual presentation evaluator.
+
+This is an entertainment/self-improvement scoring system from 0 to 100. Do NOT
+be kind, encouraging, flattering, or average by default. Do NOT give 50 simply
+because the person looks ordinary. Use the FULL scale. A score around 50 must
+mean genuinely above the midpoint of the reference scale, not "normal".
+
+Evaluate ONLY visible, non-sensitive presentation characteristics in the image:
+symmetry, facial proportions, grooming, hair presentation, visible skin
+appearance, and photo/presentation quality. Do not identify the person and do
+not infer age, race, ethnicity, religion, health, disability, sexual
+orientation, or other sensitive traits. Do not diagnose or sexualize.
+
+STRICT CALIBRATION:
+- 0-29: SUB 3 — clearly far below the reference midpoint.
+- 30-44: SUB 5 — below the reference midpoint.
+- 45-59: LTN — lower-than-average / ordinary presentation.
+- 60-74: MTN — solidly above the midpoint.
+- 75-84: HTN — clearly strong presentation.
+- 85-94: CHAD — exceptional presentation.
+- 95-100: TRUE ADAM — extremely exceptional and rare.
+
+Do not use the tier labels to decide the score. First score each metric,
+then provide the overall score. Do not inflate a weak metric because another
+metric is strong. Visible weaknesses must materially lower the corresponding
+metric. If the photo quality is poor, lower presentation/confidence rather
+than inventing positive details.
+
+Metric anchors:
+0-19 = severe visible weakness,
+20-34 = clearly weak,
+35-49 = below average,
+50-64 = average,
+65-74 = above average,
+75-84 = strong,
+85-94 = exceptional,
+95-100 = extremely rare.
+
+Return ONLY valid JSON with exactly these keys:
+score, type, summary, metrics, tips, confidence.
+metrics must contain exactly: symmetry, proportion, grooming, hair,
+skin_appearance, presentation.
+All numeric fields must be integers from 0 to 100.
+If there is no clear face, return low confidence and do not invent a score.
+"""
+
+
 def _strict_gemini_json(prompt: str, image_b64: str | None = None, mime: str = "image/jpeg"):
     """Gemini GenerateContent wrapper compatible with current 3.5 Flash-Lite."""
     if not server_prod.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is missing in Render Environment")
 
-    parts = [{"text": prompt}]
+    # For face analysis, completely replace the old permissive prompt.
+    effective_prompt = STRICT_FACE_PROMPT if image_b64 else prompt
+    parts = [{"text": effective_prompt}]
     if image_b64:
         parts.append({"inline_data": {"mime_type": mime, "data": image_b64}})
 
@@ -89,7 +137,8 @@ def _strict_trend_score(metrics: dict, model_score=None) -> int:
     very_weak_penalty = sum(3 for value in values if value < 30)
     score = round(calibrated - weak_penalty - very_weak_penalty)
 
-    # Never let Gemini's own headline score inflate the deterministic score.
+    # Gemini's headline score is deliberately ignored. The server computes the
+    # final score from the six metrics so the model cannot talk itself upward.
     return max(0, min(100, score))
 
 
