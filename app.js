@@ -1,21 +1,287 @@
-const tokenKey="prime_token";let token=localStorage.getItem(tokenKey)||"";let tracks=[];let lastEloImage=null;const $=id=>document.getElementById(id);const tg=window.Telegram?.WebApp;
-const withTimeout=(promise,ms=12000)=>Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error("PRIME server did not respond within 12 seconds")),ms))]);
-const setAuth=(text)=>{const e=$("authStatus");if(e)e.textContent=text};
-const api=async(path,options={})=>{const headers={...(options.headers||{})};if(token)headers.Authorization=`Bearer ${token}`;const r=await withTimeout(fetch(path,{...options,headers}),12000);if(r.status===401){token="";localStorage.removeItem(tokenKey);showAuth();throw new Error("authentication required")}const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||"Request failed");return data};
-function toast(t){const e=$("toast");if(e){e.textContent=t;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),1800)}}function showAuth(){$("auth")?.classList.remove("hidden")}function hideAuth(){$("auth")?.classList.add("hidden")}
-function go(id){document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));$(id)?.classList.add("active");document.querySelectorAll(".nav button").forEach(b=>b.classList.toggle("active",b.dataset.go===id));if(id==="advice")loadAdvice();if(id==="music")loadMusic();if(id==="face")loadHistories();if(id==="leaderboard")loadLeaderboard()}document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>go(b.dataset.go)));
-async function authenticateTelegram(){if(!tg){showAuth();setAuth("Telegram WebApp не найден. Открой PRIME именно через кнопку бота.");return false}try{setAuth("Инициализация Telegram…");tg.ready();tg.expand();const initData=String(tg.initData||"");if(!initData){showAuth();setAuth("Telegram не передал initData. Закрой PRIME и открой заново через кнопку бота.");return false}setAuth("Проверяем Telegram…");const data=await api("/api/auth/telegram",{method:"POST",headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData},body:JSON.stringify({initData})});token=data.token;localStorage.setItem(tokenKey,token);hideAuth();await loadProfile();toast(`PRIME готов, ${data.user.name}`);return true}catch(e){showAuth();setAuth(`Ошибка входа: ${e.message}`);console.error("PRIME Telegram auth failed",e);return false}}
-function tierForScore(score){const n=Math.max(1,Math.min(100,Number(score)||1));if(n<=29)return"SUB 3";if(n<=44)return"SUB 5";if(n<=59)return"LTN";if(n<=74)return"MTN";if(n<=79)return"HTN";if(n<=94)return"CHAD";return"TRUE ADAM"}async function loadProfile(){const p=await api("/api/me");$("primeScore").textContent=p.prime_score;$("elo").textContent=p.elo;$("rankLabel").textContent=tierForScore(p.prime_score)}function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]))}$(
-"goFace").onclick=()=>go("face");$("musicTop").onclick=()=>go("music");$("menu").onclick=()=>go("home");
-const input=$("photoInput"),preview=$("preview"),analyze=$("analyze");$("pickPhoto").onclick=()=>input.click();input.onchange=e=>{const f=e.target.files[0];if(f){preview.src=URL.createObjectURL(f);preview.classList.remove("hidden");analyze.disabled=false;toast("Фото готово")}};async function fileToB64(file){const blob=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{const max=1400,s=Math.min(1,max/Math.max(img.width,img.height)),c=document.createElement("canvas");c.width=Math.max(1,img.width*s);c.height=Math.max(1,img.height*s);c.getContext("2d").drawImage(img,0,0,c.width,c.height);c.toBlob(b=>b?resolve(b):reject(new Error("encode failed")),"image/jpeg",.86)};img.onerror=reject;img.src=URL.createObjectURL(file)});return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(",")[1]);r.onerror=reject;r.readAsDataURL(blob)})}async function analyzeImage(file){const data=await fileToB64(file);lastEloImage={image:data,mime:"image/jpeg"};return api("/api/face-ai",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(lastEloImage)})}
-analyze.onclick=async()=>{analyze.disabled=true;$("faceStatus").textContent="AI анализирует фото…";try{const r=await analyzeImage(input.files[0]);$("faceScore").textContent=r.score;$("type").textContent=r.type||tierForScore(r.score);$("typeText").textContent=`${r.summary||"Анализ завершён."} • Confidence: ${r.confidence}/100`;const labels={symmetry:"Симметрия",proportion:"Пропорции",grooming:"Уход",hair:"Волосы",skin_appearance:"Внешний вид кожи",presentation:"Презентация"};$("metrics").innerHTML=Object.entries(r.metrics||{}).map(([k,v])=>`<div class="metric"><div class="metric-head"><b>${labels[k]||k}</b><span>${v}/100</span></div><div class="meter"><i style="width:${v}%"></i></div></div>`).join("");$("scalePos").style.left=`${r.score}%`;$("tips").innerHTML=(r.tips||[]).map(x=>`<li>${escapeHtml(x)}</li>`).join("");$("faceStatus").textContent="AI анализ завершён.";$ ("faceResult").classList.remove("hidden");await loadProfile();await loadHistories();await loadEloStatus();toast(`PRIME Score: ${r.score} • ${tierForScore(r.score)}`)}catch(e){$("faceStatus").textContent=e.message;toast(e.message)}finally{analyze.disabled=false}};
-function ensureEloUI(){let box=$("eloBox");if(box)return box;const b=$("addElo");if(!b)return null;box=document.createElement("div");box.id="eloBox";box.className="card";box.innerHTML='<div class="section-title"><span>⚔ PRIME ELO</span><small>участие добровольное</small></div><p class="muted">Твоё последнее фото будет использоваться только для матчей с другими участниками ELO.</p><button id="eloConsent" class="secondary">ВКЛЮЧИТЬ ELO</button><div id="eloStatus" class="status">Проверка…</div><div id="eloArena" class="hidden"><div style="display:flex;align-items:center;gap:10px;justify-content:center"><div style="text-align:center;flex:1"><img id="eloYouPhoto" style="width:100%;max-width:140px;aspect-ratio:1;object-fit:cover;border-radius:18px"><b id="eloYouName" style="display:block">ТЫ</b></div><strong style="font-size:24px">VS</strong><div style="text-align:center;flex:1"><img id="eloOppPhoto" style="width:100%;max-width:140px;aspect-ratio:1;object-fit:cover;border-radius:18px"><b id="eloOppName" style="display:block">?</b></div></div><div id="eloResult" class="status" style="text-align:center;margin-top:14px">Готов</div></div></div>';b.insertAdjacentElement("beforebegin",box);$("eloConsent").onclick=toggleElo;return box}
-async function loadEloStatus(){try{const s=await api("/api/elo/status");const box=ensureEloUI();if(!box)return;$("eloConsent").textContent=s.enabled?"ВЫКЛЮЧИТЬ ELO":"ВКЛЮЧИТЬ ELO";$("eloStatus").textContent=s.enabled?`ELO включён • ${s.elo} • ${s.games} матчей`:`ELO выключен • ${s.has_photo?"фото готово":"сначала нужен анализ фото"}`}catch(e){console.error(e)}}
-async function toggleElo(){try{const s=await api("/api/elo/status");if(!s.enabled){if(!lastEloImage)throw new Error("Сначала сделай новый анализ фото");await api("/api/elo/photo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(lastEloImage)});await api("/api/elo/opt-in",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true})});toast("ELO включён")}else{await api("/api/elo/opt-in",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:false})});toast("ELO выключен")}await loadEloStatus()}catch(e){toast(e.message)}}
-async function runEloMatch(){try{const s=await api("/api/elo/status");if(!s.enabled){await toggleElo();const again=await api("/api/elo/status");if(!again.enabled)return}if(!lastEloImage)throw new Error("Сначала сделай анализ фото");const arena=$("eloArena");arena.classList.remove("hidden");$("eloResult").textContent="🔎 Ищем участника…";const r=await api("/api/elo/match-v2",{method:"POST"});$("eloYouPhoto").src=`data:image/jpeg;base64,${r.you.photo}`;$("eloOppPhoto").src=`data:${r.opponent.mime};base64,${r.opponent.photo}`;$("eloYouName").textContent=`${r.you.name} • ${r.you.elo_before}`;$("eloOppName").textContent=`${r.opponent.name} • ${r.opponent.elo_before}`;$("eloResult").textContent="⚡ СРАВНИВАЕМ…";arena.animate([{transform:"scale(.94)",opacity:.4},{transform:"scale(1.03)",opacity:1},{transform:"scale(1)",opacity:1}],{duration:850,easing:"ease-out"});await new Promise(x=>setTimeout(x,1000));const won=r.result==="A",tie=r.result==="TIE";$("eloResult").textContent=tie?`🤝 НИЧЬЯ • ELO ${r.you.elo_after}`:won?`🏆 ПОБЕДА • +${r.you.delta} ELO`:`💥 ПОРАЖЕНИЕ • ${r.you.delta} ELO`;await loadProfile();await loadHistories();toast(tie?"ELO: ничья":`${won?"WIN":"LOSS"} • ELO ${r.you.elo_after}`)}catch(e){toast(e.message);const a=$("eloResult");if(a)a.textContent=e.message}}
-$("addElo").onclick=runEloMatch;
-async function loadHistories(){if($("faceHistory")){const rows=await api("/api/face/history");$("faceHistory").innerHTML=rows.length?rows.map(x=>`<div class="song"><b>${x.score}/100 · ${escapeHtml(x.type||tierForScore(x.score))}</b><small>${new Date(x.created_at).toLocaleString()}</small></div>`).join(""):"<div class='muted'>История пуста.</div>"}if($("eloHistory")){const rows=await api("/api/elo/history");$("eloHistory").innerHTML=rows.length?rows.map(x=>`<div class="song"><b>${x.delta>=0?"+":""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join(""):"<div class='muted'>Матчей пока нет.</div>"}await loadEloStatus()}
-async function loadLeaderboard(){try{const rows=await api("/api/leaderboard");$("leaderboardList").innerHTML=rows.length?rows.map(x=>`<div class="song"><b>#${x.rank} · ${escapeHtml(x.name)}</b><span>${x.elo} ELO · ${x.prime_score}/100 · ${tierForScore(x.prime_score)} · ${x.wins}W/${x.losses}L</span></div>`).join(""):"<div class='muted'>Пока нет игроков.</div>"}catch(e){toast(e.message)}}
-async function loadMusic(){try{tracks=await api("/api/music");$("songs").innerHTML=tracks.length?tracks.map(t=>`<div class="song"><button data-play="${t.id}">▶</button><b>${escapeHtml(t.name)}</b><button data-del="${t.id}">×</button></div>`).join(""):"<div class='song'>Пока нет треков.</div>";document.querySelectorAll("[data-play]").forEach(b=>b.onclick=()=>playTrack(b.dataset.play));document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{await api(`/api/music/${b.dataset.del}`,{method:"DELETE"});await loadMusic();toast("Трек удалён")})}catch(e){toast(e.message)}}async function playTrack(id){const t=tracks.find(x=>x.id===id);if(!t)return;$("audio").src=t.url;$("nowPlaying").textContent=t.name;await $("audio").play().catch(()=>{})}$ ("addMusic").onclick=()=>$ ("musicInput").click();$("musicInput").onchange=async e=>{for(const file of e.target.files){const fd=new FormData();fd.append("file",file);try{await api("/api/music",{method:"POST",body:fd})}catch(err){toast(err.message)}}e.target.value="";await loadMusic()};
-async function loadAdvice(){try{const r=await api("/api/advice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({request:"Give concise practical advice"})});$("adviceList").innerHTML=(r.tips||[]).map(x=>`<div><b>AI</b><span>${escapeHtml(x)}</span></div>`).join("")||"<div><b>AI</b><span>Нет рекомендаций.</span></div>"}catch(e){toast(e.message)}}$("refreshAdvice").onclick=loadAdvice;
-(async()=>{try{if(token){setAuth("Восстанавливаем сессию…");await withTimeout(loadProfile(),12000);hideAuth();return}catch(e){console.warn("Stored PRIME token invalid:",e);token="";localStorage.removeItem(tokenKey)}await authenticateTelegram();})();
+const tokenKey = "prime_token";
+let token = localStorage.getItem(tokenKey) || "";
+let tracks = [];
+let lastEloImage = null;
+const $ = (id) => document.getElementById(id);
+const tg = window.Telegram?.WebApp;
+
+const withTimeout = (promise, ms = 12000) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error("PRIME server did not respond within 12 seconds")), ms))
+]);
+
+const setAuth = (text) => { const e = $("authStatus"); if (e) e.textContent = text; };
+function showAuth() { $("auth")?.classList.remove("hidden"); }
+function hideAuth() { $("auth")?.classList.add("hidden"); }
+function toast(text) { const e = $("toast"); if (!e) return; e.textContent = text; e.classList.add("show"); setTimeout(() => e.classList.remove("show"), 1800); }
+function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m])); }
+
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await withTimeout(fetch(path, { ...options, headers }), 12000);
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    token = "";
+    localStorage.removeItem(tokenKey);
+    showAuth();
+    throw new Error("Сессия истекла. Открываем Telegram-вход…");
+  }
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+
+function tierForScore(score) {
+  const n = Math.max(1, Math.min(100, Number(score) || 1));
+  if (n <= 29) return "SUB 3";
+  if (n <= 44) return "SUB 5";
+  if (n <= 59) return "LTN";
+  if (n <= 74) return "MTN";
+  if (n <= 79) return "HTN";
+  if (n <= 94) return "CHAD";
+  return "TRUE ADAM";
+}
+
+async function authenticateTelegram() {
+  if (!tg) { showAuth(); setAuth("Telegram WebApp не найден. Открой PRIME через кнопку бота."); return false; }
+  try {
+    setAuth("Инициализация Telegram…");
+    tg.ready();
+    tg.expand();
+    const initData = String(tg.initData || "");
+    if (!initData) throw new Error("Telegram не передал initData. Закрой PRIME и открой заново через кнопку бота.");
+    setAuth("Проверяем Telegram…");
+    const data = await api("/api/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": initData },
+      body: JSON.stringify({ initData })
+    });
+    token = data.token;
+    localStorage.setItem(tokenKey, token);
+    hideAuth();
+    await loadProfile();
+    toast(`PRIME готов${data.user?.name ? `, ${data.user.name}` : ""}`);
+    return true;
+  } catch (e) {
+    showAuth();
+    setAuth(`Ошибка входа: ${e.message}`);
+    console.error("PRIME Telegram auth failed", e);
+    return false;
+  }
+}
+
+async function loadProfile() {
+  const p = await api("/api/me");
+  if ($("primeScore")) $("primeScore").textContent = p.prime_score ?? 0;
+  if ($("elo")) $("elo").textContent = p.elo ?? 1200;
+  if ($("rankLabel")) $("rankLabel").textContent = tierForScore(p.prime_score);
+}
+
+function go(id) {
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+  $(id)?.classList.add("active");
+  document.querySelectorAll(".nav button").forEach(b => b.classList.toggle("active", b.dataset.go === id));
+  if (id === "advice") loadAdvice();
+  if (id === "music") loadMusic();
+  if (id === "face") loadHistories();
+  if (id === "leaderboard") loadLeaderboard();
+}
+document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+
+$("goFace")?.addEventListener("click", () => go("face"));
+$("musicTop")?.addEventListener("click", () => go("music"));
+$("menu")?.addEventListener("click", () => go("home"));
+
+const input = $("photoInput");
+const preview = $("preview");
+const analyze = $("analyze");
+$("pickPhoto")?.addEventListener("click", () => input?.click());
+input?.addEventListener("change", e => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  preview.src = URL.createObjectURL(file);
+  preview.classList.remove("hidden");
+  if (analyze) analyze.disabled = false;
+  toast("Фото готово");
+});
+
+async function fileToB64(file) {
+  const blob = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 1400;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error("Не удалось подготовить фото")), "image/jpeg", 0.86);
+    };
+    img.onerror = () => reject(new Error("Не удалось прочитать фото"));
+    img.src = URL.createObjectURL(file);
+  });
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = () => reject(new Error("Не удалось прочитать фото"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function analyzeImage(file) {
+  const data = await fileToB64(file);
+  lastEloImage = { image: data, mime: "image/jpeg" };
+  return api("/api/face-ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lastEloImage) });
+}
+
+analyze?.addEventListener("click", async () => {
+  if (!input?.files?.[0]) return toast("Сначала выбери фото");
+  analyze.disabled = true;
+  if ($("faceStatus")) $("faceStatus").textContent = "AI анализирует фото…";
+  try {
+    const r = await analyzeImage(input.files[0]);
+    if ($("faceScore")) $("faceScore").textContent = r.score;
+    if ($("type")) $("type").textContent = r.type || tierForScore(r.score);
+    if ($("typeText")) $("typeText").textContent = `${r.summary || "Анализ завершён."}${r.confidence != null ? ` • Confidence: ${r.confidence}/100` : ""}`;
+    const labels = { symmetry: "Симметрия", proportion: "Пропорции", grooming: "Уход", hair: "Волосы", skin_appearance: "Внешний вид кожи", presentation: "Презентация" };
+    if ($("metrics")) $("metrics").innerHTML = Object.entries(r.metrics || {}).map(([k,v]) => `<div class="metric"><div class="metric-head"><b>${labels[k] || escapeHtml(k)}</b><span>${v}/100</span></div><div class="meter"><i style="width:${Math.max(0, Math.min(100, Number(v)||0))}%"></i></div></div>`).join("");
+    if ($("scalePos")) $("scalePos").style.left = `${Math.max(0, Math.min(100, Number(r.score)||0))}%`;
+    if ($("tips")) $("tips").innerHTML = (r.tips || []).map(x => `<li>${escapeHtml(x)}</li>`).join("");
+    if ($("faceStatus")) $("faceStatus").textContent = "AI анализ завершён.";
+    $("faceResult")?.classList.remove("hidden");
+    await loadProfile();
+    await loadHistories();
+    toast(`PRIME Score: ${r.score} • ${tierForScore(r.score)}`);
+  } catch (e) {
+    if ($("faceStatus")) $("faceStatus").textContent = `AI analysis failed: ${e.message}`;
+    toast(e.message);
+  } finally { analyze.disabled = false; }
+});
+
+function ensureEloUI() {
+  let box = $("eloBox");
+  if (box) return box;
+  const add = $("addElo");
+  if (!add) return null;
+  box = document.createElement("div");
+  box.id = "eloBox";
+  box.className = "card";
+  box.innerHTML = `<div class="section-title"><span>⚔ PRIME ELO</span><small>участие добровольное</small></div><p class="muted">Последнее проанализированное фото используется только для ELO-матчей.</p><button id="eloConsent" class="secondary">ВКЛЮЧИТЬ ELO</button><div id="eloStatus" class="status">Проверка…</div><div id="eloArena" class="hidden"><div style="display:flex;align-items:center;gap:10px;justify-content:center"><div style="text-align:center;flex:1"><img id="eloYouPhoto" style="width:100%;max-width:140px;aspect-ratio:1;object-fit:cover;border-radius:18px"><b id="eloYouName" style="display:block">ТЫ</b></div><strong style="font-size:24px">VS</strong><div style="text-align:center;flex:1"><img id="eloOppPhoto" style="width:100%;max-width:140px;aspect-ratio:1;object-fit:cover;border-radius:18px"><b id="eloOppName" style="display:block">?</b></div></div><div id="eloResult" class="status" style="text-align:center;margin-top:14px">Готов</div></div>`;
+  add.insertAdjacentElement("beforebegin", box);
+  $("eloConsent")?.addEventListener("click", toggleElo);
+  return box;
+}
+
+async function loadEloStatus() {
+  try {
+    const s = await api("/api/elo/status");
+    const box = ensureEloUI();
+    if (!box) return;
+    $("eloConsent").textContent = s.enabled ? "ВЫКЛЮЧИТЬ ELO" : "ВКЛЮЧИТЬ ELO";
+    $("eloStatus").textContent = s.enabled ? `ELO включён • ${s.elo} • ${s.games} матчей` : `ELO выключен • ${s.has_photo ? "фото готово" : "сначала нужен анализ фото"}`;
+  } catch (e) { console.warn("ELO status:", e); }
+}
+
+async function toggleElo() {
+  try {
+    const s = await api("/api/elo/status");
+    if (!s.enabled) {
+      if (!lastEloImage) throw new Error("Сначала сделай новый анализ фото");
+      await api("/api/elo/photo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lastEloImage) });
+      await api("/api/elo/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) });
+      toast("ELO включён");
+    } else {
+      await api("/api/elo/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }) });
+      toast("ELO выключен");
+    }
+    await loadEloStatus();
+  } catch (e) { toast(e.message); }
+}
+
+async function runEloMatch() {
+  try {
+    let s = await api("/api/elo/status");
+    if (!s.enabled) { await toggleElo(); s = await api("/api/elo/status"); if (!s.enabled) return; }
+    if (!lastEloImage) throw new Error("Сначала сделай анализ фото");
+    const arena = $("eloArena");
+    arena?.classList.remove("hidden");
+    if ($("eloResult")) $("eloResult").textContent = "🔎 Ищем участника…";
+    const r = await api("/api/elo/match-v2", { method: "POST" });
+    if ($("eloYouPhoto")) $("eloYouPhoto").src = `data:image/jpeg;base64,${r.you.photo}`;
+    if ($("eloOppPhoto")) $("eloOppPhoto").src = `data:${r.opponent.mime || "image/jpeg"};base64,${r.opponent.photo}`;
+    if ($("eloYouName")) $("eloYouName").textContent = `${r.you.name} • ${r.you.elo_before}`;
+    if ($("eloOppName")) $("eloOppName").textContent = `${r.opponent.name} • ${r.opponent.elo_before}`;
+    if ($("eloResult")) $("eloResult").textContent = "⚡ СРАВНИВАЕМ…";
+    arena?.animate?.([{ transform: "scale(.94)", opacity: .4 }, { transform: "scale(1.03)", opacity: 1 }, { transform: "scale(1)", opacity: 1 }], { duration: 850, easing: "ease-out" });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const won = r.result === "A", tie = r.result === "TIE";
+    if ($("eloResult")) $("eloResult").textContent = tie ? `🤝 НИЧЬЯ • ELO ${r.you.elo_after}` : won ? `🏆 ПОБЕДА • +${r.you.delta} ELO` : `💥 ПОРАЖЕНИЕ • ${r.you.delta} ELO`;
+    await loadProfile();
+    await loadHistories();
+    toast(tie ? "ELO: ничья" : `${won ? "WIN" : "LOSS"} • ELO ${r.you.elo_after}`);
+  } catch (e) {
+    toast(e.message);
+    if ($("eloResult")) $("eloResult").textContent = e.message;
+  }
+}
+$("addElo")?.addEventListener("click", runEloMatch);
+
+async function loadHistories() {
+  try {
+    if ($("faceHistory")) {
+      const rows = await api("/api/face/history");
+      $("faceHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.score}/100 · ${escapeHtml(x.type || tierForScore(x.score))}</b><small>${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : "<div class='muted'>История пуста.</div>";
+    }
+    if ($("eloHistory")) {
+      const rows = await api("/api/elo/history");
+      $("eloHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.delta >= 0 ? "+" : ""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : "<div class='muted'>Матчей пока нет.</div>";
+    }
+    await loadEloStatus();
+  } catch (e) { console.warn("history:", e); }
+}
+
+async function loadLeaderboard() {
+  try {
+    const rows = await api("/api/leaderboard");
+    if ($("leaderboardList")) $("leaderboardList").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>#${x.rank} · ${escapeHtml(x.name)}</b><span>${x.elo} ELO · ${x.prime_score}/100 · ${tierForScore(x.prime_score)} · ${x.wins}W/${x.losses}L</span></div>`).join("") : "<div class='muted'>Пока нет игроков.</div>";
+  } catch (e) { toast(e.message); }
+}
+
+async function loadMusic() {
+  try {
+    tracks = await api("/api/music");
+    if ($("songs")) $("songs").innerHTML = tracks.length ? tracks.map(t => `<div class="song"><button data-play="${t.id}">▶</button><b>${escapeHtml(t.name)}</b><button data-del="${t.id}">×</button></div>`).join("") : "<div class='song'>Пока нет треков.</div>";
+    document.querySelectorAll("[data-play]").forEach(b => b.addEventListener("click", () => playTrack(b.dataset.play)));
+    document.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => { await api(`/api/music/${b.dataset.del}`, { method: "DELETE" }); await loadMusic(); toast("Трек удалён"); }));
+  } catch (e) { toast(e.message); }
+}
+async function playTrack(id) { const t = tracks.find(x => String(x.id) === String(id)); if (!t) return; if ($("audio")) { $("audio").src = t.url; $("nowPlaying").textContent = t.name; await $("audio").play().catch(() => {}); } }
+$("addMusic")?.addEventListener("click", () => $("musicInput")?.click());
+$("musicInput")?.addEventListener("change", async e => { for (const file of e.target.files || []) { const fd = new FormData(); fd.append("file", file); try { await api("/api/music", { method: "POST", body: fd }); } catch (err) { toast(err.message); } } e.target.value = ""; await loadMusic(); });
+
+async function loadAdvice() {
+  try {
+    const r = await api("/api/advice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: "Give concise practical advice" }) });
+    if ($("adviceList")) $("adviceList").innerHTML = (r.tips || []).map(x => `<div><b>AI</b><span>${escapeHtml(x)}</span></div>`).join("") || "<div><b>AI</b><span>Нет рекомендаций.</span></div>";
+  } catch (e) { toast(e.message); }
+}
+$("refreshAdvice")?.addEventListener("click", loadAdvice);
+
+(async function bootstrap() {
+  try {
+    if (token) {
+      setAuth("Восстанавливаем сессию…");
+      await withTimeout(loadProfile(), 12000);
+      hideAuth();
+      await loadEloStatus();
+      return;
+    }
+    await authenticateTelegram();
+  } catch (e) {
+    console.error("PRIME bootstrap failed", e);
+    token = "";
+    localStorage.removeItem(tokenKey);
+    showAuth();
+    setAuth(`Ошибка загрузки PRIME: ${e.message}`);
+  }
+})();
