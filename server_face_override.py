@@ -10,8 +10,6 @@ from server import app
 import server_prod
 
 
-# Gemini 2.5 Flash-Lite is unavailable to new users. If Render still contains
-# the old model variable, transparently migrate it instead of breaking deploys.
 _configured_model = os.environ.get("GEMINI_MODEL", "").strip()
 if _configured_model in {"", "gemini-2.5-flash-lite", "gemini-2.5-flash"}:
     _configured_model = "gemini-3.5-flash-lite"
@@ -21,51 +19,73 @@ server_prod.GEMINI_MODEL = _configured_model
 STRICT_FACE_PROMPT = """
 You are the PRIME visual presentation evaluator.
 
-Give a strict but rational 0-100 evaluation of ONLY visible, non-sensitive
-presentation characteristics. Be honest and evidence-based, but do not punish
-a person merely for looking ordinary, and do not force the score downward.
-Use the full scale naturally.
+Give a STRICT, RATIONAL and EVIDENCE-BASED 0-100 evaluation of ONLY visible,
+non-sensitive presentation characteristics. The goal is honest calibration,
+not kindness and not artificial harshness.
 
-Do NOT identify the person and do not infer or score age, race, ethnicity,
-religion, health, disability, sexual orientation, or other sensitive traits.
-Do not diagnose or sexualize. Evaluate only visible presentation factors.
+Do not identify the person. Do not infer or score age, race, ethnicity,
+religion, health, disability, sexual orientation, or any other sensitive trait.
+Do not diagnose, speculate about medical/genetic conditions, or sexualize.
+Evaluate only the visible characteristics explicitly listed below.
 
 REFERENCE SCALE:
 - 0-29: SUB 3 — clearly very weak visible presentation.
 - 30-44: SUB 5 — clearly below average.
 - 45-59: LTN — ordinary / lower-than-average presentation.
-- 60-74: MTN — clearly above average, solid overall presentation.
+- 60-74: MTN — clearly above-average presentation.
 - 75-84: HTN — strong presentation across most dimensions.
 - 85-94: CHAD — exceptional and uncommon presentation.
-- 95-100: TRUE ADAM — extraordinarily exceptional; genuinely rare.
+- 95-100: TRUE ADAM — extraordinarily exceptional and genuinely rare.
 
-IMPORTANT CALIBRATION:
-- 50 is NOT a mandatory default. Give 50 only when the evidence really supports
-  the midpoint.
-- Do NOT artificially push ordinary photos below 50 just to be "strict".
-- A genuinely good-looking / strong presentation can and should score 60-75+.
-- MTN must be attainable when the visible evidence supports it.
-- 80+ requires clear strength across several dimensions, not one standout trait.
-- 90+ is rare and requires exceptional consistency.
-- 95+ should be extremely rare.
-- Never inflate a weak dimension because another dimension is strong.
-- Never lower a dimension simply because the subject is not exceptional.
-- Poor lighting or an unusual camera angle should mainly affect presentation and
-  confidence, not invent facial weaknesses.
+CALIBRATION RULES:
+1. Use the FULL 0-100 range naturally. Never choose 50 just because the photo
+   is a normal-looking portrait and never choose a low score just to appear strict.
+2. 50 means the actual midpoint of the evaluated visible presentation.
+3. If several visible dimensions are clearly below average, those dimensions
+   belong in roughly 30-49, not automatically 50-59.
+4. If several visible dimensions are clearly above average, those dimensions
+   belong in roughly 60-74. MTN must be genuinely attainable.
+5. 75+ requires strong evidence across multiple dimensions.
+6. 85+ requires exceptional evidence across most dimensions.
+7. 95+ is reserved for genuinely extraordinary visible presentation and should
+   be extremely rare.
+8. Do not average away obvious weaknesses: a very strong hair or grooming score
+   must not conceal weak symmetry/proportion scores.
+9. Do not invent weaknesses: ordinary features are not automatically flaws.
+10. Photo quality, lighting, expression, camera angle and background should
+    affect PRESENTATION primarily. Do not convert bad lighting into invented
+    facial defects.
+11. Score each metric independently BEFORE deciding the overall result.
+12. Do not use the tier label to choose the score. Choose metrics from evidence,
+    then let the server calculate the final score.
+13. Avoid clustering every metric around 50. If the evidence is genuinely
+    differentiated, use differentiated numbers. A metric can be 35, 43, 57,
+    64, 72, etc.; do not round everything toward the midpoint.
 
-Metric anchors:
-0-19 = severe visible weakness,
-20-34 = clearly weak,
-35-49 = below average,
-50-59 = around average,
-60-69 = above average,
-70-79 = clearly strong,
-80-89 = very strong,
-90-94 = exceptional,
-95-100 = extraordinarily rare.
+METRIC DEFINITIONS:
+- symmetry: visible left/right facial balance when the image permits comparison.
+- proportion: visible balance of facial feature relationships and overall shape.
+- grooming: visible grooming quality and neatness.
+- hair: visible hairstyle condition, shape, neatness and presentation.
+- skin_appearance: ONLY visible surface appearance in the photo (e.g. evenness,
+  clarity, visible texture). Do not infer health or medical conditions.
+- presentation: lighting, framing, camera angle, expression and overall photo
+  presentation.
 
-Score each metric independently first. Then provide the overall score based on
-all six metrics. Do not simply copy the overall score from a generic prior.
+METRIC ANCHORS:
+0-19 = severe visible weakness
+20-34 = clearly weak
+35-49 = below average
+50-59 = around average
+60-69 = above average
+70-79 = clearly strong
+80-89 = very strong
+90-94 = exceptional
+95-100 = extraordinarily rare
+
+IMPORTANT: A person being ordinary does NOT automatically mean 50 on every
+metric. Conversely, a person does NOT deserve a low score merely because they
+are not exceptional. Make every number reflect visible evidence.
 
 Return ONLY valid JSON with exactly these keys:
 score, type, summary, metrics, tips, confidence.
@@ -122,13 +142,7 @@ def _trend_tier(score: int) -> str:
 
 
 def _strict_trend_score(metrics: dict, model_score=None) -> int:
-    """Convert six model metrics into a strict-but-rational PRIME score.
-
-    The previous power curve made an average 50/100 set of metrics collapse to
-    roughly 36/100. That was too punitive. This version keeps the midpoint
-    meaningful, lets genuinely strong presentations reach MTN/HTN, and still
-    prevents one excellent metric from hiding several weak ones.
-    """
+    """Convert model metrics into a strict but rational PRIME score."""
     keys = ["symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"]
     weights = [1.20, 1.35, 0.95, 0.90, 0.80, 0.80]
     values = []
@@ -144,9 +158,8 @@ def _strict_trend_score(metrics: dict, model_score=None) -> int:
     log_sum = sum(w * math.log(max(1.0, value)) for value, w in zip(values, weights))
     geometric = math.exp(log_sum / weight_sum)
 
-    # Keep 50 genuinely near the midpoint instead of crushing it into the 30s.
-    # A mild curve preserves strictness at the extremes without distorting the
-    # middle of the scale.
+    # Preserve the meaningful midpoint. This deliberately avoids the previous
+    # aggressive power curve that pushed ordinary 50-ish metrics into the 30s.
     delta = geometric - 50.0
     calibrated = 50.0 + math.copysign(abs(delta) ** 1.03, delta)
 
@@ -155,8 +168,7 @@ def _strict_trend_score(metrics: dict, model_score=None) -> int:
     very_weak_penalty = sum(1.5 for value in values if value < 25)
     score = round(calibrated - weak_penalty - very_weak_penalty)
 
-    # The model headline score is deliberately ignored. The server computes the
-    # final score from the six metrics so the model cannot talk itself upward.
+    # The model headline score is ignored. The server owns the final score.
     return max(0, min(100, score))
 
 
