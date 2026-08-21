@@ -5,9 +5,9 @@ let lastEloImage = null;
 const $ = (id) => document.getElementById(id);
 const tg = window.Telegram?.WebApp;
 
-const withTimeout = (promise, ms = 12000) => Promise.race([
+const withTimeout = (promise, ms = 75000) => Promise.race([
   promise,
-  new Promise((_, reject) => setTimeout(() => reject(new Error("PRIME server did not respond within 12 seconds")), ms))
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`PRIME server did not respond within ${Math.round(ms / 1000)} seconds`)), ms))
 ]);
 
 const setAuth = (text) => { const e = $("authStatus"); if (e) e.textContent = text; };
@@ -19,13 +19,15 @@ function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, m => ({"&":"
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await withTimeout(fetch(path, { ...options, headers }), 12000);
+  if (!headers["X-Requested-With"]) headers["X-Requested-With"] = "PRIME-Mini-App";
+  const request = fetch(path, { ...options, headers, cache: "no-store" });
+  const response = await withTimeout(request, path === "/api/auth/telegram" ? 75000 : 30000);
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) {
     token = "";
     localStorage.removeItem(tokenKey);
     showAuth();
-    throw new Error("Сессия истекла. Открываем Telegram-вход…");
+    throw new Error(data.error || "Сессия истекла. Открываем Telegram-вход…");
   }
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
   return data;
@@ -271,7 +273,7 @@ $("refreshAdvice")?.addEventListener("click", loadAdvice);
   try {
     if (token) {
       setAuth("Восстанавливаем сессию…");
-      await withTimeout(loadProfile(), 12000);
+      await withTimeout(loadProfile(), 30000);
       hideAuth();
       await loadEloStatus();
       return;
