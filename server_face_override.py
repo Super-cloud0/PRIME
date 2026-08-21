@@ -1,5 +1,6 @@
 """Production entrypoint for calibrated PRIME scoring and ELO."""
 
+import db_guard  # noqa: F401,E402
 import math
 import os
 
