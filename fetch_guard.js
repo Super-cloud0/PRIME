@@ -7,7 +7,7 @@
       if (callerSignal.aborted) controller.abort();
       else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
     }
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 90000);
     return nativeFetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeout));
   };
 })();
