@@ -28,15 +28,18 @@ def gemini_json_strict(prompt: str, image_b64: str, mime: str) -> dict:
             ],
         }],
         "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 1600,
+            "temperature": 0,
+            "maxOutputTokens": 2048,
             "responseMimeType": "application/json",
         },
     }
 
-    configured = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    # Gemini reported that gemini-2.5-flash-lite is no longer available to new
+    # users. Use the current model first, while allowing Render to override it
+    # through GEMINI_MODEL without ever storing a key in source control.
+    configured = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
     models = []
-    for model in (configured, "gemini-2.5-flash", "gemini-2.5-flash-lite"):
+    for model in (configured, "gemini-3.5-flash-lite"):
         if model and model not in models:
             models.append(model)
 
@@ -45,8 +48,6 @@ def gemini_json_strict(prompt: str, image_b64: str, mime: str) -> dict:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         for attempt in range(2):
             try:
-                # Use the documented API-key query parameter. This also avoids
-                # proxy/header handling issues on some hosted environments.
                 response = requests.post(
                     url,
                     params={"key": api_key},
@@ -63,12 +64,9 @@ def gemini_json_strict(prompt: str, image_b64: str, mime: str) -> dict:
                         message = response.text[:500]
                     last_error = f"Gemini {response.status_code}: {message}"
 
-                    # Invalid model/request: try the next model.
-                    if response.status_code in (400, 404):
+                    if response.status_code == 404:
                         break
-                    # Temporary quota/server/network condition: retry once,
-                    # then try the next configured fallback model.
-                    if response.status_code in (429, 500, 502, 503, 504):
+                    if response.status_code in (400, 429, 500, 502, 503, 504):
                         if attempt == 0:
                             time.sleep(1.5)
                             continue
@@ -111,8 +109,6 @@ def face_ai_override(user):
     if not image_b64 or not isinstance(image_b64, str):
         return jsonify({"error": "image is required"}), 400
 
-    # Accept either raw base64 or a data URL, so the backend is robust to
-    # different Telegram/browser clients.
     if image_b64.startswith("data:") and "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
@@ -130,9 +126,11 @@ def face_ai_override(user):
     prompt = """You are PRIME's STRICT visual presentation evaluator.
 Analyze ONLY visible, non-sensitive appearance and presentation characteristics in THIS photo.
 Do not identify the person. Do not infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, gender identity, or other sensitive traits. Do not diagnose. Do not sexualize.
-Be genuinely strict and calibrated. Do not give a high score merely because of flattering lighting. 90+ is rare. Most ordinary good photos should land around 55-80.
-Evaluate only visible evidence: grooming, hairstyle, visible skin presentation, visually observable symmetry, facial proportion/harmony, lighting, angle, image quality, and overall presentation. Do not invent flaws.
-Calibration: 0-39 major visible problems; 40-54 weak; 55-64 below/around average; 65-74 solid; 75-84 clearly strong; 85-89 excellent and uncommon; 90-100 exceptional and very uncommon.
+Be genuinely strict and calibrated. Do not give a high score merely because of flattering lighting. Do not reward a single strong feature with a high overall score. Do not invent flaws.
+Evaluate only visible evidence: grooming, hairstyle, visible skin presentation, visually observable symmetry, facial proportion/harmony, lighting, angle, image quality, and overall presentation.
+Calibration: 0-29 extremely weak; 30-39 clearly weak; 40-49 below average; 50-59 ordinary/average; 60-69 above average; 70-79 strong and uncommon; 80-89 excellent and rare; 90-94 exceptional and very rare; 95-100 extraordinarily rare.
+Most ordinary photos MUST remain around 45-60. 70+ requires consistently strong visible evidence. 80+ requires exceptional performance across nearly every metric. 90+ should be almost never used.
+If a dimension cannot be judged reliably, use a neutral value rather than guessing positively.
 Return ONLY valid JSON with exactly these keys: score, type, summary, metrics, tips, confidence.
 metrics MUST contain exactly: symmetry, proportion, grooming, hair, skin_appearance, presentation. All numeric values are integers 0-100.
 type must be one of SUB 5, MTN, HTN, LTN, CHAD.
@@ -153,6 +151,37 @@ confidence is confidence in visible evidence, 0-100.
                 metrics[key] = 0
         tips = [str(v).strip()[:300] for v in (result.get("tips") or []) if str(v).strip()][:5]
         confidence = max(0, min(100, int(result.get("confidence", 0))))
+
+        # Do not trust Gemini's headline score. Recalculate a conservative
+        # score from its component metrics so one flattering output cannot
+        # inflate the final PRIME score.
+        weights = {
+            "symmetry": 0.22,
+            "proportion": 0.22,
+            "grooming": 0.15,
+            "hair": 0.12,
+            "skin_appearance": 0.14,
+            "presentation": 0.15,
+        }
+        weighted = sum(metrics[key] * weights[key] for key in required)
+        raw_score = weighted
+        score = 50 + (raw_score - 50) * 0.75
+
+        weak = sum(1 for value in metrics.values() if value < 50)
+        very_weak = sum(1 for value in metrics.values() if value < 40)
+        score -= weak * 1.5
+        score -= very_weak * 2.0
+
+        if min(metrics.values()) < 55:
+            score = min(score, 69)
+        if sum(value >= 70 for value in metrics.values()) < 5:
+            score = min(score, 74)
+        if sum(value >= 80 for value in metrics.values()) < 5:
+            score = min(score, 79)
+        if sum(value >= 90 for value in metrics.values()) < 5:
+            score = min(score, 89)
+
+        score = max(10, min(95, round(score)))
 
         analysis = FaceAnalysis(
             id=str(uuid.uuid4()),
