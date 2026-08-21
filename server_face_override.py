@@ -10,9 +10,12 @@ from server import app
 import server_prod
 
 
-# Gemini 2.5 Flash-Lite is unavailable to new users. Keep the production
-# default here so Render works even when GEMINI_MODEL is not set.
-server_prod.GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
+# Gemini 2.5 Flash-Lite is unavailable to new users. If Render still contains
+# the old model variable, transparently migrate it instead of breaking deploys.
+_configured_model = os.environ.get("GEMINI_MODEL", "").strip()
+if _configured_model in {"", "gemini-2.5-flash-lite", "gemini-2.5-flash"}:
+    _configured_model = "gemini-3.5-flash-lite"
+server_prod.GEMINI_MODEL = _configured_model
 
 
 STRICT_FACE_PROMPT = """
@@ -41,8 +44,8 @@ STRICT CALIBRATION:
 Do not use the tier labels to decide the score. First score each metric,
 then provide the overall score. Do not inflate a weak metric because another
 metric is strong. Visible weaknesses must materially lower the corresponding
-metric. If the photo quality is poor, lower presentation/confidence rather
-than inventing positive details.
+metric. If the photo quality is poor, lower presentation/confidence rather than
+inventing positive details.
 
 Metric anchors:
 0-19 = severe visible weakness,
@@ -68,7 +71,6 @@ def _strict_gemini_json(prompt: str, image_b64: str | None = None, mime: str = "
     if not server_prod.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is missing in Render Environment")
 
-    # For face analysis, completely replace the old permissive prompt.
     effective_prompt = STRICT_FACE_PROMPT if image_b64 else prompt
     parts = [{"text": effective_prompt}]
     if image_b64:
@@ -90,8 +92,6 @@ def _strict_gemini_json(prompt: str, image_b64: str | None = None, mime: str = "
     return server_prod.extract_json(text)
 
 
-# server_prod.face_ai resolves gemini_json from its module globals, so replacing
-# this reference upgrades the existing endpoint without duplicating the endpoint.
 server_prod.gemini_json = _strict_gemini_json
 
 
