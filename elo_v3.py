@@ -166,7 +166,7 @@ def elo_match_v3(user):
             "reason": "Practice opponent: real ELO participants are not available yet.",
             "is_bot": True,
             "opponent": {"id": f"bot_{bot_elo}", "name": bot_name, "elo_before": bot_elo, "elo_after": bot_elo, "mime": bot_mime, "photo": base64.b64encode(bot_photo).decode("ascii")},
-            "you": {"id": user.id, "name": user.name, "elo_before": before_a, "elo_after": me.elo, "delta": delta_a, "mime": me.prime_score and me.prime_score >= 0 and "image/jpeg" or "image/jpeg", "photo": base64.b64encode(me.photo_data).decode("ascii")},
+            "you": {"id": user.id, "name": user.name, "elo_before": before_a, "elo_after": me.elo, "delta": delta_a, "mime": "image/jpeg", "photo": base64.b64encode(me.photo_data).decode("ascii")},
             "tier": _tier(user.prime_score),
         })
 
@@ -206,14 +206,14 @@ def elo_match_v3(user):
     })
 
 
-# Keep the current Mini App routes working while migrating to v3.
+# Explicit routes avoid dependence on legacy endpoint names during deployment.
+app.add_url_rule("/api/elo/status", endpoint="elo_status_v3_compat", view_func=elo_status_v3, methods=["GET"])
+app.add_url_rule("/api/elo/opt-in", endpoint="elo_opt_in_v3_compat", view_func=elo_opt_in_v3, methods=["POST"])
+app.add_url_rule("/api/elo/photo", endpoint="elo_photo_v3_compat", view_func=elo_photo_v3, methods=["POST"])
+app.add_url_rule("/api/elo/match-v2", endpoint="elo_match_v3_compat", view_func=elo_match_v3, methods=["POST"])
 app.add_url_rule("/api/elo/status-v3", endpoint="elo_status_v3_route", view_func=elo_status_v3, methods=["GET"])
 app.add_url_rule("/api/elo/opt-in-v3", endpoint="elo_opt_in_v3_route", view_func=elo_opt_in_v3, methods=["POST"])
 app.add_url_rule("/api/elo/photo-v3", endpoint="elo_photo_v3_route", view_func=elo_photo_v3, methods=["POST"])
-app.view_functions["elo_status"] = elo_status_v3
-app.view_functions["elo_opt_in"] = elo_opt_in_v3
-app.view_functions["elo_photo"] = elo_photo_v3
-app.view_functions["elo_match_v2"] = elo_match_v3
 
 with app.app_context():
     db.create_all()
