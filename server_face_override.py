@@ -33,8 +33,8 @@ REFERENCE SCALE:
 - 30-44: SUB 5 — clearly below average.
 - 45-59: LTN — ordinary / lower-than-average presentation.
 - 60-74: MTN — clearly above-average presentation.
-- 75-84: HTN — strong presentation across most dimensions.
-- 85-94: CHAD — exceptional and uncommon presentation.
+- 75-79: HTN — strong presentation across most dimensions.
+- 80-94: CHAD — exceptional and uncommon presentation.
 - 95-100: TRUE ADAM — extraordinarily exceptional and genuinely rare.
 
 CALIBRATION RULES:
@@ -46,9 +46,10 @@ CALIBRATION RULES:
 4. If several visible dimensions are clearly above average, those dimensions
    belong in roughly 60-74. MTN must be genuinely attainable.
 5. 75+ requires strong evidence across multiple dimensions.
-6. 85+ requires exceptional evidence across most dimensions.
-7. 95+ is reserved for genuinely extraordinary visible presentation and should
-   be extremely rare.
+6. 80+ is the CHAD band: it requires consistently strong visible presentation
+   across most dimensions, not merely one excellent feature.
+7. 90+ is rare; 95+ is reserved for genuinely extraordinary visible
+   presentation and should be extremely rare.
 8. Do not average away obvious weaknesses: a very strong hair or grooming score
    must not conceal weak symmetry/proportion scores.
 9. Do not invent weaknesses: ordinary features are not automatically flaws.
@@ -61,6 +62,9 @@ CALIBRATION RULES:
 13. Avoid clustering every metric around 50. If the evidence is genuinely
     differentiated, use differentiated numbers. A metric can be 35, 43, 57,
     64, 72, etc.; do not round everything toward the midpoint.
+14. For genuinely exceptional reference photos, do not cap strong metrics at
+    the 60s merely because the subject is not a celebrity. Strong evidence may
+    legitimately produce 80s or 90s.
 
 METRIC DEFINITIONS:
 - symmetry: visible left/right facial balance when the image permits comparison.
@@ -134,7 +138,7 @@ def _trend_tier(score: int) -> str:
         return "LTN"
     if score <= 74:
         return "MTN"
-    if score <= 84:
+    if score <= 79:
         return "HTN"
     if score <= 94:
         return "CHAD"
@@ -158,17 +162,13 @@ def _strict_trend_score(metrics: dict, model_score=None) -> int:
     log_sum = sum(w * math.log(max(1.0, value)) for value, w in zip(values, weights))
     geometric = math.exp(log_sum / weight_sum)
 
-    # Preserve the meaningful midpoint. This deliberately avoids the previous
-    # aggressive power curve that pushed ordinary 50-ish metrics into the 30s.
     delta = geometric - 50.0
     calibrated = 50.0 + math.copysign(abs(delta) ** 1.03, delta)
 
-    # Weak dimensions matter, but only when they are meaningfully weak.
     weak_penalty = sum(max(0, 40 - value) * 0.12 for value in values)
     very_weak_penalty = sum(1.5 for value in values if value < 25)
     score = round(calibrated - weak_penalty - very_weak_penalty)
 
-    # The model headline score is ignored. The server owns the final score.
     return max(0, min(100, score))
 
 
