@@ -1,18 +1,12 @@
-"""Versioned Telegram Mini App entrypoint.
-
-Telegram clients can keep an old Mini App document even when query-string
-cache busting changes. This module gives PRIME a new URL path so Telegram
-loads a fresh document while keeping the existing app, API, auth, AI and ELO
-handlers untouched.
-"""
+"""Versioned Telegram Mini App entrypoint with explicit asset cache busting."""
 from urllib.parse import urlsplit, urlunsplit
 
-from flask import send_from_directory
+from flask import Response, send_from_directory
 
 import server
 from server_prod import BASE, app
 
-VERSION = "20260821-3"
+VERSION = "20260821-4"
 PATH = f"/__prime/{VERSION}"
 
 
@@ -26,12 +20,26 @@ def versioned_webapp_url() -> str:
 
 @app.get(f"{PATH}/")
 def prime_versioned_index():
-    return send_from_directory(BASE, "index.html")
+    # Telegram can cache both the document and referenced JS independently.
+    # Return a fresh HTML document with a unique asset version on every new
+    # PRIME path version, and explicitly disable caching for the entrypoint.
+    html = (BASE / "index.html").read_text(encoding="utf-8")
+    for asset in ("style.css", "fetch_guard.js", "share.js", "app.js"):
+        html = html.replace(f"{asset}?v=575e807", f"{asset}?v={VERSION}")
+    response = Response(html, mimetype="text/html")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.get(f"{PATH}/<path:filename>")
 def prime_versioned_static(filename):
-    return send_from_directory(BASE, filename)
+    response = send_from_directory(BASE, filename)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def versioned_menu_markup():
