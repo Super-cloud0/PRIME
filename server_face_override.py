@@ -1,4 +1,4 @@
-"""Production entrypoint for Render with calibrated PRIME trend scoring."""
+"""Production entrypoint for calibrated PRIME scoring and ELO."""
 
 import math
 import os
@@ -98,8 +98,10 @@ def _face_ai_trend():
 if _original_face_ai is not None:
     app.view_functions["face_ai"] = _face_ai_trend
 
-# Register consent-based ELO routes.
-import elo_v2  # noqa: E402,F401
+# Register the current photo-based ELO implementation. It preserves the
+# existing /api/elo/match-v2 route used by the Mini App and adds a practice
+# opponent when no real participant is available yet.
+import elo_v3  # noqa: E402,F401
 
 __all__ = ["app"]
 
