@@ -179,8 +179,8 @@ def telegram_webhook():
     return jsonify({"ok": True})
 
 
-# Production Gemini vision implementation. This is intentionally installed
-# into the server_prod route below because Render starts gunicorn as server:app.
+# Production Gemini vision implementation. Render starts gunicorn as server:app,
+# so this compatibility layer owns the production Face AI route.
 def _gemini_json_compat(prompt: str, image_b64: str | None = None, mime: str = "image/jpeg"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -202,6 +202,7 @@ def _gemini_json_compat(prompt: str, image_b64: str | None = None, mime: str = "
         "generationConfig": {
             "maxOutputTokens": 2048,
             "responseMimeType": "application/json",
+            "temperature": 0.0,
         },
     }
 
@@ -271,18 +272,69 @@ def _face_ai_fixed(user):
     if len(raw) > 8 * 1024 * 1024:
         return jsonify({"error": "image too large"}), 413
 
-    prompt = """You are PRIME's strict visual self-improvement coach. Analyze only visible, non-sensitive presentation features in the supplied photo. Never identify the person and never infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, or other sensitive traits. Do not diagnose or sexualize. Be strict and honest: do not inflate scores. Judge visible presentation quality against a demanding adult grooming/style standard. Return ONLY valid JSON with this exact shape: {score: integer 0-100, type: string, summary: string, metrics: {symmetry: integer, proportion: integer, grooming: integer, hair: integer, skin_appearance: integer, presentation: integer}, tips: [string, ...], confidence: integer 0-100}. All metric values and score must be integers. Give 3-5 practical, safe improvement tips. If the face is not clearly visible, set confidence <=20 and do not invent observations."""
+    prompt = """You are PRIME's STRICT visual self-improvement evaluator. Analyze ONLY visible, non-sensitive presentation features in the supplied photo. Never identify the person and never infer or mention age, race, ethnicity, religion, health, disability, sexual orientation, or other sensitive traits. Do not diagnose, sexualize, or make claims about immutable identity.
+
+Your job is NOT to be nice. Your job is to produce a CONSISTENT, CONSERVATIVE, NON-INFLATED score. Do not give compliments merely because the photo is clear or the person looks generally pleasant. Penalize visible weaknesses and do not compensate for them with generic positivity.
+
+CALIBRATION — follow this scale literally:
+- 0-19: extremely poor visible presentation / unusable image quality for evaluation.
+- 20-29: very weak visible presentation with many clear issues.
+- 30-39: below average with several noticeable issues.
+- 40-49: somewhat below average.
+- 50-59: ordinary / average presentation. 50 is the true midpoint, not a bad score.
+- 60-69: clearly above average, with multiple strengths and only limited weaknesses.
+- 70-79: strong presentation; clearly uncommon and polished.
+- 80-89: exceptional presentation; very few visible weaknesses.
+- 90-94: extremely exceptional and rare; only use when the visible presentation is close to outstanding across nearly every scored dimension.
+- 95-100: extraordinarily rare, near-perfect visible presentation. Almost never use this range.
+
+IMPORTANT CALIBRATION RULES:
+1. Do NOT default to 70, 80, or 90. Average people must cluster around 45-60.
+2. A normal attractive/pleasant-looking photo is NOT automatically 70+.
+3. A good haircut, clear skin appearance, or good lighting alone is NOT enough for a high score.
+4. Any obvious weakness must lower the relevant metric and the overall score.
+5. Judge the supplied image, not an imagined better version of the person.
+6. Do not infer anything that is not clearly visible.
+7. Lighting, camera angle, expression, image quality, grooming, hair, visible skin presentation, facial presentation, symmetry and proportion must be judged separately where visible.
+8. If a dimension cannot be judged reliably from this image, lower confidence and use a neutral score for that dimension rather than inventing a strength.
+9. Keep the score internally consistent: the overall score should approximately reflect the average of the visible metrics, with no unexplained boost.
+10. Be especially conservative with scores above 70. A score above 80 requires strong evidence across nearly all visible dimensions.
+
+Return ONLY valid JSON with exactly this shape: {"score": integer 0-100, "type": string, "summary": string, "metrics": {"symmetry": integer 0-100, "proportion": integer 0-100, "grooming": integer 0-100, "hair": integer 0-100, "skin_appearance": integer 0-100, "presentation": integer 0-100}, "tips": [string, ...], "confidence": integer 0-100}.
+
+Give 3-5 direct, practical, safe improvement tips. Do not flatter the user. If the face is not clearly visible, confidence must be <=20 and do not invent observations."""
 
     try:
         result = _gemini_json_compat(prompt, base64.b64encode(raw).decode("ascii"), data.get("mime", "image/jpeg"))
-        score = max(0, min(100, int(result.get("score", 0))))
         source_metrics = result.get("metrics") or {}
-        metrics = {
-            key: max(0, min(100, int(value)))
-            for key, value in source_metrics.items()
-            if key in {"symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"}
-            and isinstance(value, (int, float))
-        }
+        allowed = {"symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"}
+        metrics = {}
+        for key in allowed:
+            value = source_metrics.get(key)
+            if isinstance(value, (int, float)):
+                metrics[key] = max(0, min(100, int(value)))
+
+        if metrics:
+            metric_average = round(sum(metrics.values()) / len(metrics))
+        else:
+            metric_average = 50
+
+        model_score = result.get("score", metric_average)
+        try:
+            model_score = max(0, min(100, int(model_score)))
+        except (TypeError, ValueError):
+            model_score = metric_average
+
+        # The model's headline score is deliberately given little influence.
+        # This prevents flattering one-off scores from overriding its own metrics.
+        score = round(metric_average * 0.75 + model_score * 0.25)
+
+        # Strict ceiling unless the model provides consistently exceptional metrics.
+        if score >= 90 and (not metrics or min(metrics.values()) < 85):
+            score = 89
+        if score >= 80 and (not metrics or sum(v >= 75 for v in metrics.values()) < 5):
+            score = min(score, 79)
+
         tips = [str(value)[:300] for value in (result.get("tips") or [])[:5]]
         confidence = max(0, min(100, int(result.get("confidence", 0))))
         analysis = server_prod.FaceAnalysis(
@@ -310,8 +362,6 @@ def _face_ai_fixed(user):
         return jsonify({"error": f"AI analysis failed: {type(exc).__name__}: {exc}"}), 502
 
 
-# Render uses gunicorn server:app. server.app is imported from server_prod,
-# so replace that endpoint's view function before gunicorn starts serving it.
 server_prod.gemini_json = _gemini_json_compat
 server_prod.app.view_functions["face_ai"] = server_prod.auth_required(_face_ai_fixed)
 
@@ -322,5 +372,3 @@ with app.app_context():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8765")))
-
-# force production Face AI redeploy
