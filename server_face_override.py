@@ -1,4 +1,4 @@
-"""Production entrypoint for Render with strict PRIME trend calibration."""
+"""Production entrypoint for Render with calibrated PRIME trend scoring."""
 
 import math
 import os
@@ -19,43 +19,53 @@ server_prod.GEMINI_MODEL = _configured_model
 
 
 STRICT_FACE_PROMPT = """
-You are the STRICT PRIME visual presentation evaluator.
+You are the PRIME visual presentation evaluator.
 
-This is an entertainment/self-improvement scoring system from 0 to 100. Do NOT
-be kind, encouraging, flattering, or average by default. Do NOT give 50 simply
-because the person looks ordinary. Use the FULL scale. A score around 50 must
-mean genuinely above the midpoint of the reference scale, not "normal".
+Give a strict but rational 0-100 evaluation of ONLY visible, non-sensitive
+presentation characteristics. Be honest and evidence-based, but do not punish
+a person merely for looking ordinary, and do not force the score downward.
+Use the full scale naturally.
 
-Evaluate ONLY visible, non-sensitive presentation characteristics in the image:
-symmetry, facial proportions, grooming, hair presentation, visible skin
-appearance, and photo/presentation quality. Do not identify the person and do
-not infer age, race, ethnicity, religion, health, disability, sexual
-orientation, or other sensitive traits. Do not diagnose or sexualize.
+Do NOT identify the person and do not infer or score age, race, ethnicity,
+religion, health, disability, sexual orientation, or other sensitive traits.
+Do not diagnose or sexualize. Evaluate only visible presentation factors.
 
-STRICT CALIBRATION:
-- 0-29: SUB 3 — clearly far below the reference midpoint.
-- 30-44: SUB 5 — below the reference midpoint.
-- 45-59: LTN — lower-than-average / ordinary presentation.
-- 60-74: MTN — solidly above the midpoint.
-- 75-84: HTN — clearly strong presentation.
-- 85-94: CHAD — exceptional presentation.
-- 95-100: TRUE ADAM — extremely exceptional and rare.
+REFERENCE SCALE:
+- 0-29: SUB 3 — clearly very weak visible presentation.
+- 30-44: SUB 5 — clearly below average.
+- 45-59: LTN — ordinary / lower-than-average presentation.
+- 60-74: MTN — clearly above average, solid overall presentation.
+- 75-84: HTN — strong presentation across most dimensions.
+- 85-94: CHAD — exceptional and uncommon presentation.
+- 95-100: TRUE ADAM — extraordinarily exceptional; genuinely rare.
 
-Do not use the tier labels to decide the score. First score each metric,
-then provide the overall score. Do not inflate a weak metric because another
-metric is strong. Visible weaknesses must materially lower the corresponding
-metric. If the photo quality is poor, lower presentation/confidence rather than
-inventing positive details.
+IMPORTANT CALIBRATION:
+- 50 is NOT a mandatory default. Give 50 only when the evidence really supports
+  the midpoint.
+- Do NOT artificially push ordinary photos below 50 just to be "strict".
+- A genuinely good-looking / strong presentation can and should score 60-75+.
+- MTN must be attainable when the visible evidence supports it.
+- 80+ requires clear strength across several dimensions, not one standout trait.
+- 90+ is rare and requires exceptional consistency.
+- 95+ should be extremely rare.
+- Never inflate a weak dimension because another dimension is strong.
+- Never lower a dimension simply because the subject is not exceptional.
+- Poor lighting or an unusual camera angle should mainly affect presentation and
+  confidence, not invent facial weaknesses.
 
 Metric anchors:
 0-19 = severe visible weakness,
 20-34 = clearly weak,
 35-49 = below average,
-50-64 = average,
-65-74 = above average,
-75-84 = strong,
-85-94 = exceptional,
-95-100 = extremely rare.
+50-59 = around average,
+60-69 = above average,
+70-79 = clearly strong,
+80-89 = very strong,
+90-94 = exceptional,
+95-100 = extraordinarily rare.
+
+Score each metric independently first. Then provide the overall score based on
+all six metrics. Do not simply copy the overall score from a generic prior.
 
 Return ONLY valid JSON with exactly these keys:
 score, type, summary, metrics, tips, confidence.
@@ -76,7 +86,6 @@ def _strict_gemini_json(prompt: str, image_b64: str | None = None, mime: str = "
     if image_b64:
         parts.append({"inline_data": {"mime_type": mime, "data": image_b64}})
 
-    # Gemini 3.5 Flash-Lite deprecates sampling controls such as temperature.
     payload = {
         "contents": [{"parts": parts}],
         "generationConfig": {"responseMimeType": "application/json"},
@@ -113,6 +122,13 @@ def _trend_tier(score: int) -> str:
 
 
 def _strict_trend_score(metrics: dict, model_score=None) -> int:
+    """Convert six model metrics into a strict-but-rational PRIME score.
+
+    The previous power curve made an average 50/100 set of metrics collapse to
+    roughly 36/100. That was too punitive. This version keeps the midpoint
+    meaningful, lets genuinely strong presentations reach MTN/HTN, and still
+    prevents one excellent metric from hiding several weak ones.
+    """
     keys = ["symmetry", "proportion", "grooming", "hair", "skin_appearance", "presentation"]
     weights = [1.20, 1.35, 0.95, 0.90, 0.80, 0.80]
     values = []
@@ -124,20 +140,22 @@ def _strict_trend_score(metrics: dict, model_score=None) -> int:
             value = 50
         values.append(max(0, min(100, value)))
 
-    # Geometric mean prevents a single strong metric from hiding several weak
-    # ones. The power curve intentionally compresses the middle of the scale:
-    # 50-ish raw quality does NOT become an automatic 50/100.
     weight_sum = sum(weights)
     log_sum = sum(w * math.log(max(1.0, value)) for value, w in zip(values, weights))
     geometric = math.exp(log_sum / weight_sum)
-    calibrated = 100.0 * ((geometric / 100.0) ** 1.45)
 
-    # Extra penalties make weak dimensions matter instead of averaging them away.
-    weak_penalty = sum(max(0, 50 - value) * 0.24 for value in values)
-    very_weak_penalty = sum(3 for value in values if value < 30)
+    # Keep 50 genuinely near the midpoint instead of crushing it into the 30s.
+    # A mild curve preserves strictness at the extremes without distorting the
+    # middle of the scale.
+    delta = geometric - 50.0
+    calibrated = 50.0 + math.copysign(abs(delta) ** 1.03, delta)
+
+    # Weak dimensions matter, but only when they are meaningfully weak.
+    weak_penalty = sum(max(0, 40 - value) * 0.12 for value in values)
+    very_weak_penalty = sum(1.5 for value in values if value < 25)
     score = round(calibrated - weak_penalty - very_weak_penalty)
 
-    # Gemini's headline score is deliberately ignored. The server computes the
+    # The model headline score is deliberately ignored. The server computes the
     # final score from the six metrics so the model cannot talk itself upward.
     return max(0, min(100, score))
 
@@ -171,7 +189,7 @@ def _face_ai_trend():
         return jsonify(payload)
     except Exception:
         server_prod.db.session.rollback()
-        app.logger.exception("Strict PRIME trend score calibration failed; returning original result")
+        app.logger.exception("PRIME score calibration failed; returning original result")
         return response
 
 
