@@ -8,7 +8,7 @@ import os
 import secrets
 import time
 import uuid
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from flask import jsonify, request
@@ -20,6 +20,16 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_AUTH_MAX_AGE = int(os.environ.get("TELEGRAM_AUTH_MAX_AGE", "86400"))
 TELEGRAM_WEBAPP_URL = os.environ.get("TELEGRAM_WEBAPP_URL", "").strip()
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+PRIME_WEBAPP_VERSION = "20260821-2"
+
+
+def versioned_webapp_url() -> str:
+    if not TELEGRAM_WEBAPP_URL:
+        return ""
+    parts = urlsplit(TELEGRAM_WEBAPP_URL)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["v"] = PRIME_WEBAPP_VERSION
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def validate_telegram_init_data(init_data: str) -> dict:
@@ -120,10 +130,11 @@ def telegram_api(method: str, payload: dict):
 
 
 def telegram_menu_markup():
-    if not TELEGRAM_WEBAPP_URL:
+    webapp_url = versioned_webapp_url()
+    if not webapp_url:
         return None
     return {"inline_keyboard": [[
-        {"text": "🚀 Открыть PRIME", "web_app": {"url": TELEGRAM_WEBAPP_URL}}
+        {"text": "🚀 Открыть PRIME", "web_app": {"url": webapp_url}}
     ]]}
 
 
@@ -296,8 +307,6 @@ Give 3-5 practical, safe improvement tips tied to visible presentation. Do not f
         except (TypeError, ValueError):
             model_score = metric_average
 
-        # Conservative server-side calibration: Gemini's headline score is
-        # secondary to its six component metrics.
         score = round(metric_average * 0.8 + model_score * 0.2)
         weak = sum(v < 50 for v in metrics.values())
         very_weak = sum(v < 40 for v in metrics.values())
@@ -360,4 +369,5 @@ with app.app_context():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8765")))
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
