@@ -4,6 +4,26 @@
   const shareUrl=()=>location.origin+location.pathname;
   const shareText=()=>{const score=Number($("faceScore")?.textContent||0),tier=$("type")?.textContent||scoreTier(score),elo=$("elo")?.textContent||"1000";return `Мой PRIME Score: ${score}/100 • ${tier}\nELO: ${elo}\n\nПроверь себя в PRIME ⚡`};
   function telegramUrl(){const text=shareText();return `https://t.me/share/url?url=${encodeURIComponent(shareUrl())}&text=${encodeURIComponent(text)}`}
+
+  // HARD FALLBACK: navigation must work even if app.js/auth/API fails.
+  function go(id){
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    const target=$(id); if(target) target.classList.add('active');
+    document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.go===id));
+    window.scrollTo(0,0);
+  }
+  function emergencyClick(e){
+    const b=e.target?.closest?.('[data-go],#goFace,#menu,#musicTop');
+    if(!b)return;
+    if(b.dataset.go){e.preventDefault();e.stopImmediatePropagation();go(b.dataset.go);return;}
+    if(b.id==='goFace'){e.preventDefault();e.stopImmediatePropagation();go('face');return;}
+    if(b.id==='menu'){e.preventDefault();e.stopImmediatePropagation();go('home');return;}
+    if(b.id==='musicTop'){e.preventDefault();e.stopImmediatePropagation();go('music');return;}
+  }
+  document.addEventListener('pointerup',emergencyClick,true);
+  document.addEventListener('click',emergencyClick,true);
+  const auth=$("auth"); if(auth){auth.style.pointerEvents='none';auth.style.zIndex='0';}
+
   function render(){
     const result=$("faceResult");
     if(!result||$("primeSharePanel"))return;
