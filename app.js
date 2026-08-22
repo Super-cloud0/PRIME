@@ -5,7 +5,7 @@ let lastEloImage = null;
 const $ = (id) => document.getElementById(id);
 const tg = window.Telegram?.WebApp;
 
-const withTimeout = (promise, ms = 75000) => Promise.race([
+const withTimeout = (promise, ms = 30000) => Promise.race([
   promise,
   new Promise((_, reject) => setTimeout(() => reject(new Error(`PRIME server did not respond within ${Math.round(ms / 1000)} seconds`)), ms))
 ]);
@@ -21,7 +21,7 @@ async function api(path, options = {}) {
   if (token) headers.Authorization = `Bearer ${token}`;
   if (!headers["X-Requested-With"]) headers["X-Requested-With"] = "PRIME-Mini-App";
   const request = fetch(path, { ...options, headers, cache: "no-store" });
-  const response = await withTimeout(request, path === "/api/auth/telegram" ? 75000 : 30000);
+  const response = await withTimeout(request, path === "/api/auth/telegram" ? 30000 : 30000);
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) {
     token = "";
@@ -53,21 +53,52 @@ async function authenticateTelegram() {
     const initData = String(tg.initData || "");
     if (!initData) throw new Error("Telegram не передал initData. Закрой PRIME и открой заново через кнопку бота.");
     setAuth("Проверяем Telegram…");
-    const data = await api("/api/auth/telegram", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": initData },
-      body: JSON.stringify({ initData })
-    });
-    token = data.token;
-    localStorage.setItem(tokenKey, token);
-    hideAuth();
-    await loadProfile();
-    toast(`PRIME готов${data.user?.name ? `, ${data.user.name}` : ""}`);
-    return true;
+
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 30000);
+    try {
+      const data = await api("/api/auth/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": initData },
+        body: JSON.stringify({ initData }),
+        signal: controller.signal
+      });
+      token = data.token;
+      localStorage.setItem(tokenKey, token);
+      hideAuth();
+      await loadProfile();
+      toast(`PRIME готов${data.user?.name ? `, ${data.user.name}` : ""}`);
+      return true;
+    } finally {
+      clearTimeout(abortTimer);
+    }
   } catch (e) {
     showAuth();
-    setAuth(`Ошибка входа: ${e.message}`);
+    const message = e?.name === "AbortError" ? "Render не ответил за 30 секунд. Повторяю…" : e.message;
+    setAuth(message);
     console.error("PRIME Telegram auth failed", e);
+
+    // Render Free can cold-start. Give the first wake-up a second chance,
+    // but never leave the user on an infinite spinner.
+    if (e?.name === "AbortError" || /did not respond|Failed to fetch|NetworkError/i.test(String(e?.message || ""))) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      try {
+        setAuth("Повторная попытка подключения…");
+        const retry = await api("/api/auth/telegram", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": initData },
+          body: JSON.stringify({ initData })
+        });
+        token = retry.token;
+        localStorage.setItem(tokenKey, token);
+        hideAuth();
+        await loadProfile();
+        toast(`PRIME готов${retry.user?.name ? `, ${retry.user.name}` : ""}`);
+        return true;
+      } catch (retryError) {
+        setAuth(`Ошибка входа: ${retryError.message}`);
+      }
+    }
     return false;
   }
 }
