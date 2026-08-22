@@ -13,3 +13,5 @@
     console.warn("PRIME Telegram session bootstrap failed", error);
   }
 })();
+
+// Deploy trigger: 2026-08-22T14:00Z
