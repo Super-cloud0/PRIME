@@ -25,9 +25,16 @@ const withTimeout = (promise, ms = 30000) => Promise.race([
   new Promise((_, reject) => setTimeout(() => reject(new Error(`PRIME server did not respond within ${Math.round(ms / 1000)} seconds`)), ms))
 ]);
 
-const setAuth = (text) => { const e = $("authStatus"); if (e) e.textContent = text; };
+const setAuth = (text) => {
+  const e = $("authStatus"); if (e) e.textContent = text;
+  // #authStatus lives inside #auth, which style.css permanently hides -- so
+  // without this, a slow Render cold-start or a failed connection produced
+  // zero visible feedback and looked identical to "the site is broken".
+  const n = $("netStatus");
+  if (n) { n.textContent = text; n.classList.toggle("hidden", !text); }
+};
 function showAuth() { $("auth")?.classList.remove("hidden"); }
-function hideAuth() { $("auth")?.classList.add("hidden"); }
+function hideAuth() { $("auth")?.classList.add("hidden"); setAuth(""); }
 function toast(text) { const e = $("toast"); if (!e) return; e.textContent = text; e.classList.add("show"); setTimeout(() => e.classList.remove("show"), 1800); }
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m])); }
 
@@ -224,6 +231,7 @@ async function loadAdvice() { try { const r = await api("/api/advice", { method:
 $("refreshAdvice")?.addEventListener("click", loadAdvice);
 
 (async function bootstrap() {
+  setAuth("Подключаемся к серверу… (если он спал, это может занять до минуты)");
   try {
     if (token) { setAuth("Восстанавливаем сессию…"); await withTimeout(loadProfile(), 30000); hideAuth(); await loadEloStatus(); return; }
     await authenticateTelegram();
