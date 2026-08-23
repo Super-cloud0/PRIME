@@ -3,7 +3,22 @@ let token = localStorage.getItem(tokenKey) || "";
 let tracks = [];
 let lastEloImage = null;
 const $ = (id) => document.getElementById(id);
-const tg = window.Telegram?.WebApp;
+function waitForTelegram(timeoutMs = 4000) {
+  // telegram-web-app.js loads with `async` now, so it can finish after our
+  // own deferred scripts start running. Poll briefly instead of assuming
+  // window.Telegram.WebApp already exists -- a slow/blocked fetch of that
+  // external script must degrade to "open PRIME from the bot", never hang
+  // the whole app or make every button silently do nothing.
+  return new Promise(resolve => {
+    const start = Date.now();
+    (function check() {
+      const w = window.Telegram && window.Telegram.WebApp;
+      if (w) return resolve(w);
+      if (Date.now() - start >= timeoutMs) return resolve(null);
+      setTimeout(check, 50);
+    })();
+  });
+}
 
 const withTimeout = (promise, ms = 30000) => Promise.race([
   promise,
@@ -45,6 +60,7 @@ function tierForScore(score) {
 }
 
 async function authenticateTelegram() {
+  const tg = await waitForTelegram();
   if (!tg) { showAuth(); setAuth("Telegram WebApp не найден. Открой PRIME через кнопку бота."); return false; }
   try {
     setAuth("Инициализация Telegram…");
