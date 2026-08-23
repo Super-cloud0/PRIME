@@ -1,6 +1,17 @@
 function byId(id){return document.getElementById(id);}
-const stateKey="prime_mvp_state";let state=JSON.parse(localStorage.getItem(stateKey)||'{"score":72,"elo":1000}');
-const uid=localStorage.getItem("prime_uid")||crypto.randomUUID();localStorage.setItem("prime_uid",uid);
+const stateKey="prime_mvp_state";
+const defaultState={score:72,elo:1000};
+function loadState(){try{return {...defaultState,...JSON.parse(localStorage.getItem(stateKey)||"{}")} }catch(e){return {...defaultState}}}
+function makeUid(){
+  const stored=localStorage.getItem("prime_uid");
+  if(stored)return stored;
+  const generator=window.crypto&&typeof window.crypto.randomUUID==="function"?window.crypto.randomUUID.bind(window.crypto):null;
+  const uid=generator?generator():`prime_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,10)}`;
+  localStorage.setItem("prime_uid",uid);
+  return uid;
+}
+let state=loadState();
+const uid=makeUid();
 let profile=null;
 let selectedFile=null,tracks=[],current=-1,audio=new Audio();
 
@@ -13,6 +24,13 @@ function renderHome(){document.getElementById("primeScore").textContent=state.sc
 async function syncProfile(){try{const tgUser=window.Telegram?.WebApp?.initDataUnsafe?.user;const name=tgUser?.first_name||localStorage.getItem("prime_name")||"PRIME USER";localStorage.setItem("prime_name",name);const r=await fetch(`/api/profile?id=${encodeURIComponent(uid)}&name=${encodeURIComponent(name)}`);if(!r.ok)return;profile=await r.json();state.elo=profile.elo;state.score=profile.prime_score;save();renderHome()}catch(e){}}
 async function saveScoreToServer(){try{const name=localStorage.getItem("prime_name")||"PRIME USER";const r=await fetch("/api/profile",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:uid,name,prime_score:state.score})});if(r.ok)profile=await r.json()}catch(e){console.warn("profile sync failed",e)}}
 async function leaderboard(){try{const r=await fetch("/api/leaderboard");if(!r.ok)throw Error();const rows=await r.json();let txt=rows.slice(0,8).map((x,i)=>`${i+1}. ${x.name} — ${x.elo}`).join("\n");toast(txt||"Пока никто не сыграл")}catch(e){toast("Запусти сервер PRIME")}}
+function initTelegramWebApp(){
+  const webApp=window.Telegram&&window.Telegram.WebApp;
+  if(!webApp)return;
+  if(typeof webApp.ready==="function")webApp.ready();
+  if(typeof webApp.expand==="function")webApp.expand();
+}
+initTelegramWebApp();
 renderHome();syncProfile();
 
 document.getElementById("goFace").onclick=()=>go("face");document.getElementById("musicTop").onclick=()=>go("music");document.getElementById("menu").onclick=()=>go("home");
