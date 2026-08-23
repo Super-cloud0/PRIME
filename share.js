@@ -1,28 +1,20 @@
+// PRIME result-sharing panel (Telegram share / native share / copy).
+//
+// NOTE: this file used to also own its own document-level click/pointerup
+// interceptors (capture phase + stopImmediatePropagation) as a navigation
+// "emergency fallback", and forcibly poked #auth's inline styles. Both were
+// redundant: navigation is owned exclusively by app.js's go() (the only
+// implementation that also loads each tab's data), and the #auth overlay is
+// already permanently disabled via style.css (.auth-overlay{display:none
+// !important}). Having multiple systems race for the same clicks is what
+// caused tabs to look empty/frozen -- this file now only renders the share
+// panel.
 (function(){
   const $=id=>document.getElementById(id);
   const scoreTier=s=>{const n=Math.max(1,Math.min(100,Number(s)||1));if(n<=29)return"SUB 3";if(n<=44)return"SUB 5";if(n<=59)return"LTN";if(n<=74)return"MTN";if(n<=79)return"HTN";if(n<=94)return"CHAD";return"TRUE ADAM"};
   const shareUrl=()=>location.origin+location.pathname;
   const shareText=()=>{const score=Number($("faceScore")?.textContent||0),tier=$("type")?.textContent||scoreTier(score),elo=$("elo")?.textContent||"1000";return `Мой PRIME Score: ${score}/100 • ${tier}\nELO: ${elo}\n\nПроверь себя в PRIME ⚡`};
   function telegramUrl(){const text=shareText();return `https://t.me/share/url?url=${encodeURIComponent(shareUrl())}&text=${encodeURIComponent(text)}`}
-
-  // HARD FALLBACK: navigation must work even if app.js/auth/API fails.
-  function go(id){
-    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-    const target=$(id); if(target) target.classList.add('active');
-    document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.go===id));
-    window.scrollTo(0,0);
-  }
-  function emergencyClick(e){
-    const b=e.target?.closest?.('[data-go],#goFace,#menu,#musicTop');
-    if(!b)return;
-    if(b.dataset.go){e.preventDefault();e.stopImmediatePropagation();go(b.dataset.go);return;}
-    if(b.id==='goFace'){e.preventDefault();e.stopImmediatePropagation();go('face');return;}
-    if(b.id==='menu'){e.preventDefault();e.stopImmediatePropagation();go('home');return;}
-    if(b.id==='musicTop'){e.preventDefault();e.stopImmediatePropagation();go('music');return;}
-  }
-  document.addEventListener('pointerup',emergencyClick,true);
-  document.addEventListener('click',emergencyClick,true);
-  const auth=$("auth"); if(auth){auth.style.pointerEvents='none';auth.style.zIndex='0';}
 
   function render(){
     const result=$("faceResult");

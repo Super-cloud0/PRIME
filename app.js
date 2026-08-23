@@ -214,27 +214,20 @@ $("refreshAdvice")?.addEventListener("click", loadAdvice);
   } catch (e) { console.error("PRIME bootstrap failed", e); token = ""; localStorage.removeItem(tokenKey); showAuth(); setAuth(`Ошибка загрузки PRIME: ${e.message}`); }
 })();
 
-// HARD UI SAFETY: Telegram WebView must never be covered by the auth layer.
+// Defensive CSS only: #auth is already permanently disabled via style.css
+// (.auth-overlay{display:none!important}); this is a second, independent
+// guarantee in case that rule is ever reverted. It intentionally does NOT
+// register its own click handler anymore -- go() above (bound to each
+// button individually, further up this file) is the single owner of
+// navigation. A second document-level capture-phase listener here used to
+// race with it and swallow clicks meant for the real handler, which is why
+// tabs could look like they "switched" without ever loading their data.
 (function forceInteractiveUI() {
   const css = document.createElement("style");
   css.id = "prime-touch-safety";
   css.textContent = `
-    #auth { display:none !important; pointer-events:none !important; visibility:hidden !important; }
-    #auth * { pointer-events:none !important; }
-    .app, .app * { pointer-events:auto; }
-    button, a, input, select, textarea, label { pointer-events:auto !important; touch-action:manipulation !important; }
+    #auth.hidden { display:none !important; pointer-events:none !important; visibility:hidden !important; }
+    button, a, input, select, textarea, label { touch-action:manipulation; }
   `;
   (document.head || document.documentElement).appendChild(css);
-  const killAuth = () => {
-    const auth = document.getElementById("auth");
-    if (auth) { auth.classList.add("hidden"); auth.style.display = "none"; auth.style.pointerEvents = "none"; auth.style.visibility = "hidden"; }
-  };
-  killAuth();
-  setInterval(killAuth, 500);
-  document.addEventListener("click", e => {
-    const button = e.target?.closest?.("button[data-go], #goFace, #menu, #musicTop");
-    if (!button) return;
-    const id = button.dataset.go || (button.id === "goFace" ? "face" : button.id === "musicTop" ? "music" : button.id === "menu" ? "home" : null);
-    if (id) { e.preventDefault(); e.stopImmediatePropagation(); go(id); }
-  }, true);
 })();
