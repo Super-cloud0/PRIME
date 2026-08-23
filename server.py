@@ -168,4 +168,7 @@ surgery, starvation, drugs, steroids or self-harm; if no clear face, confidence 
     except Exception as e: return jsonify({"error":"Gemini request failed","details":str(e)}),502
 
 if __name__=="__main__":
-    db().close(); app.run(host="127.0.0.1",port=8765,debug=False)
+    db().close()
+    port = int(os.environ.get("PORT", "8765"))
+    host = os.environ.get("HOST", "0.0.0.0")
+    app.run(host=host, port=port, debug=False)
