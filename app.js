@@ -21,7 +21,7 @@ async function api(path, options = {}) {
   if (token) headers.Authorization = `Bearer ${token}`;
   if (!headers["X-Requested-With"]) headers["X-Requested-With"] = "PRIME-Mini-App";
   const request = fetch(path, { ...options, headers, cache: "no-store" });
-  const response = await withTimeout(request, path === "/api/auth/telegram" ? 30000 : 30000);
+  const response = await withTimeout(request, 30000);
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) {
     token = "";
@@ -53,7 +53,6 @@ async function authenticateTelegram() {
     const initData = String(tg.initData || "");
     if (!initData) throw new Error("Telegram не передал initData. Закрой PRIME и открой заново через кнопку бота.");
     setAuth("Проверяем Telegram…");
-
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), 30000);
     try {
@@ -69,17 +68,12 @@ async function authenticateTelegram() {
       await loadProfile();
       toast(`PRIME готов${data.user?.name ? `, ${data.user.name}` : ""}`);
       return true;
-    } finally {
-      clearTimeout(abortTimer);
-    }
+    } finally { clearTimeout(abortTimer); }
   } catch (e) {
     showAuth();
     const message = e?.name === "AbortError" ? "Render не ответил за 30 секунд. Повторяю…" : e.message;
     setAuth(message);
     console.error("PRIME Telegram auth failed", e);
-
-    // Render Free can cold-start. Give the first wake-up a second chance,
-    // but never leave the user on an infinite spinner.
     if (e?.name === "AbortError" || /did not respond|Failed to fetch|NetworkError/i.test(String(e?.message || ""))) {
       await new Promise(resolve => setTimeout(resolve, 1500));
       try {
@@ -95,9 +89,7 @@ async function authenticateTelegram() {
         await loadProfile();
         toast(`PRIME готов${retry.user?.name ? `, ${retry.user.name}` : ""}`);
         return true;
-      } catch (retryError) {
-        setAuth(`Ошибка входа: ${retryError.message}`);
-      }
+      } catch (retryError) { setAuth(`Ошибка входа: ${retryError.message}`); }
     }
     return false;
   }
@@ -120,7 +112,6 @@ function go(id) {
   if (id === "leaderboard") loadLeaderboard();
 }
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
-
 $("goFace")?.addEventListener("click", () => go("face"));
 $("musicTop")?.addEventListener("click", () => go("music"));
 $("menu")?.addEventListener("click", () => go("home"));
@@ -160,13 +151,11 @@ async function fileToB64(file) {
     reader.readAsDataURL(blob);
   });
 }
-
 async function analyzeImage(file) {
   const data = await fileToB64(file);
   lastEloImage = { image: data, mime: "image/jpeg" };
   return api("/api/face-ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lastEloImage) });
 }
-
 analyze?.addEventListener("click", async () => {
   if (!input?.files?.[0]) return toast("Сначала выбери фото");
   analyze.disabled = true;
@@ -182,8 +171,7 @@ analyze?.addEventListener("click", async () => {
     if ($("tips")) $("tips").innerHTML = (r.tips || []).map(x => `<li>${escapeHtml(x)}</li>`).join("");
     if ($("faceStatus")) $("faceStatus").textContent = "AI анализ завершён.";
     $("faceResult")?.classList.remove("hidden");
-    await loadProfile();
-    await loadHistories();
+    await loadProfile(); await loadHistories();
     toast(`PRIME Score: ${r.score} • ${tierForScore(r.score)}`);
   } catch (e) {
     if ($("faceStatus")) $("faceStatus").textContent = `AI analysis failed: ${e.message}`;
@@ -192,129 +180,61 @@ analyze?.addEventListener("click", async () => {
 });
 
 function ensureEloUI() {
-  let box = $("eloBox");
-  if (box) return box;
-  const add = $("addElo");
-  if (!add) return null;
-  box = document.createElement("div");
-  box.id = "eloBox";
-  box.className = "card";
+  let box = $("eloBox"); if (box) return box;
+  const add = $("addElo"); if (!add) return null;
+  box = document.createElement("div"); box.id = "eloBox"; box.className = "card";
   box.innerHTML = `<div class="section-title"><span>⚔ PRIME ELO</span><small>участие добровольное</small></div><p class="muted">Последнее проанализированное фото используется только для ELO-матчей.</p><button id="eloConsent" class="secondary">ВКЛЮЧИТЬ ELO</button><div id="eloStatus" class="status">Проверка…</div><div id="eloArena" class="hidden"><div style="display:flex;align-items:center;gap:10px;justify-content:center"><div style="text-align:center;flex:1"><img id="eloYouPhoto" style="width:100%;max-width:140px;aspect-ratio:1;object-fit:cover;border-radius:18px"><b id="eloYouName" style="display:block">ТЫ</b></div><strong style="font-size:24px">VS</strong><div style="text-align:center;flex:1"><img id="eloOppPhoto" style="width:100%;max-width:140px;aspect-ratio:1;object-fit:cover;border-radius:18px"><b id="eloOppName" style="display:block">?</b></div></div><div id="eloResult" class="status" style="text-align:center;margin-top:14px">Готов</div></div>`;
-  add.insertAdjacentElement("beforebegin", box);
-  $("eloConsent")?.addEventListener("click", toggleElo);
-  return box;
+  add.insertAdjacentElement("beforebegin", box); $("eloConsent")?.addEventListener("click", toggleElo); return box;
 }
-
 async function loadEloStatus() {
-  try {
-    const s = await api("/api/elo/status");
-    const box = ensureEloUI();
-    if (!box) return;
-    $("eloConsent").textContent = s.enabled ? "ВЫКЛЮЧИТЬ ELO" : "ВКЛЮЧИТЬ ELO";
-    $("eloStatus").textContent = s.enabled ? `ELO включён • ${s.elo} • ${s.games} матчей` : `ELO выключен • ${s.has_photo ? "фото готово" : "сначала нужен анализ фото"}`;
-  } catch (e) { console.warn("ELO status:", e); }
+  try { const s = await api("/api/elo/status"); const box = ensureEloUI(); if (!box) return; $("eloConsent").textContent = s.enabled ? "ВЫКЛЮЧИТЬ ELO" : "ВКЛЮЧИТЬ ELO"; $("eloStatus").textContent = s.enabled ? `ELO включён • ${s.elo} • ${s.games} матчей` : `ELO выключен • ${s.has_photo ? "фото готово" : "сначала нужен анализ фото"}`; } catch (e) { console.warn("ELO status:", e); }
 }
-
 async function toggleElo() {
-  try {
-    const s = await api("/api/elo/status");
-    if (!s.enabled) {
-      if (!lastEloImage) throw new Error("Сначала сделай новый анализ фото");
-      await api("/api/elo/photo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lastEloImage) });
-      await api("/api/elo/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) });
-      toast("ELO включён");
-    } else {
-      await api("/api/elo/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }) });
-      toast("ELO выключен");
-    }
-    await loadEloStatus();
-  } catch (e) { toast(e.message); }
+  try { const s = await api("/api/elo/status"); if (!s.enabled) { if (!lastEloImage) throw new Error("Сначала сделай новый анализ фото"); await api("/api/elo/photo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lastEloImage) }); await api("/api/elo/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) }); toast("ELO включён"); } else { await api("/api/elo/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }) }); toast("ELO выключен"); } await loadEloStatus(); } catch (e) { toast(e.message); }
 }
-
 async function runEloMatch() {
-  try {
-    let s = await api("/api/elo/status");
-    if (!s.enabled) { await toggleElo(); s = await api("/api/elo/status"); if (!s.enabled) return; }
-    if (!lastEloImage) throw new Error("Сначала сделай анализ фото");
-    const arena = $("eloArena");
-    arena?.classList.remove("hidden");
-    if ($("eloResult")) $("eloResult").textContent = "🔎 Ищем участника…";
-    const r = await api("/api/elo/match-v2", { method: "POST" });
-    if ($("eloYouPhoto")) $("eloYouPhoto").src = `data:image/jpeg;base64,${r.you.photo}`;
-    if ($("eloOppPhoto")) $("eloOppPhoto").src = `data:${r.opponent.mime || "image/jpeg"};base64,${r.opponent.photo}`;
-    if ($("eloYouName")) $("eloYouName").textContent = `${r.you.name} • ${r.you.elo_before}`;
-    if ($("eloOppName")) $("eloOppName").textContent = `${r.opponent.name} • ${r.opponent.elo_before}`;
-    if ($("eloResult")) $("eloResult").textContent = "⚡ СРАВНИВАЕМ…";
-    arena?.animate?.([{ transform: "scale(.94)", opacity: .4 }, { transform: "scale(1.03)", opacity: 1 }, { transform: "scale(1)", opacity: 1 }], { duration: 850, easing: "ease-out" });
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const won = r.result === "A", tie = r.result === "TIE";
-    if ($("eloResult")) $("eloResult").textContent = tie ? `🤝 НИЧЬЯ • ELO ${r.you.elo_after}` : won ? `🏆 ПОБЕДА • +${r.you.delta} ELO` : `💥 ПОРАЖЕНИЕ • ${r.you.delta} ELO`;
-    await loadProfile();
-    await loadHistories();
-    toast(tie ? "ELO: ничья" : `${won ? "WIN" : "LOSS"} • ELO ${r.you.elo_after}`);
-  } catch (e) {
-    toast(e.message);
-    if ($("eloResult")) $("eloResult").textContent = e.message;
-  }
+  try { let s = await api("/api/elo/status"); if (!s.enabled) { await toggleElo(); s = await api("/api/elo/status"); if (!s.enabled) return; } if (!lastEloImage) throw new Error("Сначала сделай анализ фото"); const arena = $("eloArena"); arena?.classList.remove("hidden"); if ($("eloResult")) $("eloResult").textContent = "🔎 Ищем участника…"; const r = await api("/api/elo/match-v2", { method: "POST" }); if ($("eloYouPhoto")) $("eloYouPhoto").src = `data:image/jpeg;base64,${r.you.photo}`; if ($("eloOppPhoto")) $("eloOppPhoto").src = `data:${r.opponent.mime || "image/jpeg"};base64,${r.opponent.photo}`; if ($("eloYouName")) $("eloYouName").textContent = `${r.you.name} • ${r.you.elo_before}`; if ($("eloOppName")) $("eloOppName").textContent = `${r.opponent.name} • ${r.opponent.elo_before}`; if ($("eloResult")) $("eloResult").textContent = "⚡ СРАВНИВАЕМ…"; arena?.animate?.([{ transform: "scale(.94)", opacity: .4 }, { transform: "scale(1.03)", opacity: 1 }, { transform: "scale(1)", opacity: 1 }], { duration: 850, easing: "ease-out" }); await new Promise(resolve => setTimeout(resolve, 1000)); const won = r.result === "A", tie = r.result === "TIE"; if ($("eloResult")) $("eloResult").textContent = tie ? `🤝 НИЧЬЯ • ELO ${r.you.elo_after}` : won ? `🏆 ПОБЕДА • +${r.you.delta} ELO` : `💥 ПОРАЖЕНИЕ • ${r.you.delta} ELO`; await loadProfile(); await loadHistories(); toast(tie ? "ELO: ничья" : `${won ? "WIN" : "LOSS"} • ELO ${r.you.elo_after}`); } catch (e) { toast(e.message); if ($("eloResult")) $("eloResult").textContent = e.message; }
 }
 $("addElo")?.addEventListener("click", runEloMatch);
-
 async function loadHistories() {
-  try {
-    if ($("faceHistory")) {
-      const rows = await api("/api/face/history");
-      $("faceHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.score}/100 · ${escapeHtml(x.type || tierForScore(x.score))}</b><small>${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : "<div class='muted'>История пуста.</div>";
-    }
-    if ($("eloHistory")) {
-      const rows = await api("/api/elo/history");
-      $("eloHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.delta >= 0 ? "+" : ""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : "<div class='muted'>Матчей пока нет.</div>";
-    }
-    await loadEloStatus();
-  } catch (e) { console.warn("history:", e); }
+  try { if ($("faceHistory")) { const rows = await api("/api/face/history"); $("faceHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.score}/100 · ${escapeHtml(x.type || tierForScore(x.score))}</b><small>${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : "<div class='muted'>История пуста.</div>"; } if ($("eloHistory")) { const rows = await api("/api/elo/history"); $("eloHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.delta >= 0 ? "+" : ""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : "<div class='muted'>Матчей пока нет.</div>"; } await loadEloStatus(); } catch (e) { console.warn("history:", e); }
 }
-
-async function loadLeaderboard() {
-  try {
-    const rows = await api("/api/leaderboard");
-    if ($("leaderboardList")) $("leaderboardList").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>#${x.rank} · ${escapeHtml(x.name)}</b><span>${x.elo} ELO · ${x.prime_score}/100 · ${tierForScore(x.prime_score)} · ${x.wins}W/${x.losses}L</span></div>`).join("") : "<div class='muted'>Пока нет игроков.</div>";
-  } catch (e) { toast(e.message); }
-}
-
-async function loadMusic() {
-  try {
-    tracks = await api("/api/music");
-    if ($("songs")) $("songs").innerHTML = tracks.length ? tracks.map(t => `<div class="song"><button data-play="${t.id}">▶</button><b>${escapeHtml(t.name)}</b><button data-del="${t.id}">×</button></div>`).join("") : "<div class='song'>Пока нет треков.</div>";
-    document.querySelectorAll("[data-play]").forEach(b => b.addEventListener("click", () => playTrack(b.dataset.play)));
-    document.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => { await api(`/api/music/${b.dataset.del}`, { method: "DELETE" }); await loadMusic(); toast("Трек удалён"); }));
-  } catch (e) { toast(e.message); }
-}
+async function loadLeaderboard() { try { const rows = await api("/api/leaderboard"); if ($("leaderboardList")) $("leaderboardList").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>#${x.rank} · ${escapeHtml(x.name)}</b><span>${x.elo} ELO · ${x.prime_score}/100 · ${tierForScore(x.prime_score)} · ${x.wins}W/${x.losses}L</span></div>`).join("") : "<div class='muted'>Пока нет игроков.</div>"; } catch (e) { toast(e.message); } }
+async function loadMusic() { try { tracks = await api("/api/music"); if ($("songs")) $("songs").innerHTML = tracks.length ? tracks.map(t => `<div class="song"><button data-play="${t.id}">▶</button><b>${escapeHtml(t.name)}</b><button data-del="${t.id}">×</button></div>`).join("") : "<div class='song'>Пока нет треков.</div>"; document.querySelectorAll("[data-play]").forEach(b => b.addEventListener("click", () => playTrack(b.dataset.play))); document.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => { await api(`/api/music/${b.dataset.del}`, { method: "DELETE" }); await loadMusic(); toast("Трек удалён"); })); } catch (e) { toast(e.message); } }
 async function playTrack(id) { const t = tracks.find(x => String(x.id) === String(id)); if (!t) return; if ($("audio")) { $("audio").src = t.url; $("nowPlaying").textContent = t.name; await $("audio").play().catch(() => {}); } }
 $("addMusic")?.addEventListener("click", () => $("musicInput")?.click());
 $("musicInput")?.addEventListener("change", async e => { for (const file of e.target.files || []) { const fd = new FormData(); fd.append("file", file); try { await api("/api/music", { method: "POST", body: fd }); } catch (err) { toast(err.message); } } e.target.value = ""; await loadMusic(); });
-
-async function loadAdvice() {
-  try {
-    const r = await api("/api/advice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: "Give concise practical advice" }) });
-    if ($("adviceList")) $("adviceList").innerHTML = (r.tips || []).map(x => `<div><b>AI</b><span>${escapeHtml(x)}</span></div>`).join("") || "<div><b>AI</b><span>Нет рекомендаций.</span></div>";
-  } catch (e) { toast(e.message); }
-}
+async function loadAdvice() { try { const r = await api("/api/advice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: "Give concise practical advice" }) }); if ($("adviceList")) $("adviceList").innerHTML = (r.tips || []).map(x => `<div><b>AI</b><span>${escapeHtml(x)}</span></div>`).join("") || "<div><b>AI</b><span>Нет рекомендаций.</span></div>"; } catch (e) { toast(e.message); } }
 $("refreshAdvice")?.addEventListener("click", loadAdvice);
 
 (async function bootstrap() {
   try {
-    if (token) {
-      setAuth("Восстанавливаем сессию…");
-      await withTimeout(loadProfile(), 30000);
-      hideAuth();
-      await loadEloStatus();
-      return;
-    }
+    if (token) { setAuth("Восстанавливаем сессию…"); await withTimeout(loadProfile(), 30000); hideAuth(); await loadEloStatus(); return; }
     await authenticateTelegram();
-  } catch (e) {
-    console.error("PRIME bootstrap failed", e);
-    token = "";
-    localStorage.removeItem(tokenKey);
-    showAuth();
-    setAuth(`Ошибка загрузки PRIME: ${e.message}`);
-  }
+  } catch (e) { console.error("PRIME bootstrap failed", e); token = ""; localStorage.removeItem(tokenKey); showAuth(); setAuth(`Ошибка загрузки PRIME: ${e.message}`); }
+})();
+
+// HARD UI SAFETY: Telegram WebView must never be covered by the auth layer.
+(function forceInteractiveUI() {
+  const css = document.createElement("style");
+  css.id = "prime-touch-safety";
+  css.textContent = `
+    #auth { display:none !important; pointer-events:none !important; visibility:hidden !important; }
+    #auth * { pointer-events:none !important; }
+    .app, .app * { pointer-events:auto; }
+    button, a, input, select, textarea, label { pointer-events:auto !important; touch-action:manipulation !important; }
+  `;
+  (document.head || document.documentElement).appendChild(css);
+  const killAuth = () => {
+    const auth = document.getElementById("auth");
+    if (auth) { auth.classList.add("hidden"); auth.style.display = "none"; auth.style.pointerEvents = "none"; auth.style.visibility = "hidden"; }
+  };
+  killAuth();
+  setInterval(killAuth, 500);
+  document.addEventListener("click", e => {
+    const button = e.target?.closest?.("button[data-go], #goFace, #menu, #musicTop");
+    if (!button) return;
+    const id = button.dataset.go || (button.id === "goFace" ? "face" : button.id === "musicTop" ? "music" : button.id === "menu" ? "home" : null);
+    if (id) { e.preventDefault(); e.stopImmediatePropagation(); go(id); }
+  }, true);
 })();
