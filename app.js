@@ -2,6 +2,7 @@ function byId(id){return document.getElementById(id);}
 const stateKey="prime_mvp_state";
 const defaultState={score:72,elo:1000};
 function loadState(){try{return {...defaultState,...JSON.parse(localStorage.getItem(stateKey)||"{}")} }catch(e){return {...defaultState}}}
+function isSupportedImage(file){return !!(file&&typeof file.type==="string"&&/^image\/(jpeg|png|webp|gif|bmp)$/i.test(file.type))}
 function makeUid(){
   const stored=localStorage.getItem("prime_uid");
   if(stored)return stored;
@@ -40,10 +41,11 @@ if(goFaceBtn)goFaceBtn.onclick=()=>go("face");if(musicTopBtn)musicTopBtn.onclick
 const input=byId("photoInput"),preview=byId("preview"),analyze=byId("analyze");
 const pickPhotoBtn=byId("pickPhoto");
 if(pickPhotoBtn&&input)pickPhotoBtn.onclick=()=>input.click();
-if(input&&preview&&analyze)input.onchange=e=>{selectedFile=e.target.files[0];if(!selectedFile)return;preview.src=URL.createObjectURL(selectedFile);preview.classList.remove("hidden");analyze.disabled=false;toast("Фото готово")};
+if(input&&preview&&analyze)input.onchange=e=>{selectedFile=e.target.files[0];if(!selectedFile)return;if(!isSupportedImage(selectedFile)){selectedFile=null;analyze.disabled=true;toast("Выбери изображение JPG/PNG/WEBP/GIF/BMP");return}if(preview._objectUrl)URL.revokeObjectURL(preview._objectUrl);preview._objectUrl=URL.createObjectURL(selectedFile);preview.src=preview._objectUrl;preview.classList.remove("hidden");analyze.disabled=false;toast("Фото готово")};
 
 async function analyzeImageWithAI(file){
-  const resized=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{const max=1400;const scale=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement("canvas");c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));c.getContext("2d").drawImage(img,0,0,c.width,c.height);c.toBlob(blob=>blob?resolve(blob):reject(new Error("image encode failed")),"image/jpeg",0.86)};img.onerror=()=>reject(new Error("image load failed"));img.src=URL.createObjectURL(file)});
+  if(!isSupportedImage(file))throw new Error("Неподдерживаемый формат изображения");
+  const resized=await new Promise((resolve,reject)=>{const img=new Image();const objectUrl=URL.createObjectURL(file);img.onload=()=>{const max=1400;const scale=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement("canvas");c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(objectUrl);c.toBlob(blob=>blob?resolve(blob):reject(new Error("image encode failed")),"image/jpeg",0.86)};img.onerror=()=>{URL.revokeObjectURL(objectUrl);reject(new Error("image load failed"))};img.src=objectUrl});
   const dataUrl=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(resized)});
   const base64=dataUrl.split(",")[1];const resp=await fetch("/api/face-ai",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({image:base64,mime:"image/jpeg"})});const result=await resp.json();if(!resp.ok)throw new Error(result.error||"AI analysis failed");return result;
 }
@@ -52,7 +54,7 @@ if(analyze)analyze.onclick=async()=>{
   if(!selectedFile){toast("Сначала выбери фото");return} analyze.disabled=true;const status=byId("faceStatus");if(status)status.textContent="AI анализирует фото…";
   try{const r=await analyzeImageWithAI(selectedFile);state.score=Math.round(Number(r.score)||0);save();await saveScoreToServer();renderHome();
     const scoreEl=byId("faceScore");if(scoreEl)scoreEl.textContent=state.score;const typeEl=byId("type");if(typeEl)typeEl.textContent=r.type||"HTN";const textEl=byId("typeText");if(textEl)textEl.textContent=(r.summary||"AI анализ завершён.")+(r.confidence!=null?` • Confidence: ${r.confidence}/100`:"");
-    const labels={symmetry:"Симметрия",proportion:"Пропорции",grooming:"Уход",hair:"Волосы",skin_appearance:"Внешний вид кожи",presentation:"Презентация"};const metrics=byId("metrics");if(metrics)metrics.innerHTML=Object.entries(r.metrics||{}).map(([k,v])=>`<div class="metric"><div class="metric-head"><b>${labels[k]||k}</b><span>${Math.round(v)}/100</span></div><div class="meter"><i style="width:${Math.max(0,Math.min(100,Number(v)||0))}%"></i></div></div>`).join("");
+    const labels={symmetry:"Симметрия",proportion:"Пропорции",grooming:"Уход",hair:"Волосы",skin_appearance:"Внешний вид кожи",presentation:"Презентация"};const metrics=byId("metrics");if(metrics)metrics.innerHTML=Object.entries(r.metrics||{}).map(([k,v])=>`<div class="metric"><div class="metric-head"><b>${escapeHtml(String(labels[k]||k))}</b><span>${Math.round(v)}/100</span></div><div class="meter"><i style="width:${Math.max(0,Math.min(100,Number(v)||0))}%"></i></div></div>`).join("");
     const scale=byId("scalePos");if(scale)scale.style.left=`${Math.max(0,Math.min(100,state.score))}%`;const tips=byId("tips");if(tips)tips.innerHTML=(r.tips||[]).slice(0,5).map(x=>`<li>${escapeHtml(String(x))}</li>`).join("");if(status)status.textContent="AI анализ завершён.";byId("faceResult")?.classList.remove("hidden");toast(`PRIME Score: ${state.score}`);
   }catch(e){console.error(e);if(status)status.textContent="Ошибка AI: проверь GEMINI_API_KEY и сервер.";toast(e.message||"AI error")}finally{analyze.disabled=false}
 };
