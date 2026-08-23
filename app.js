@@ -1,14 +1,31 @@
 const tokenKey = "prime_token";
-let token = localStorage.getItem(tokenKey) || "";
+// Wrapped defensively: some WebView configurations (older Android builds,
+// certain privacy/storage-partitioning modes) throw a SecurityError just
+// *accessing* localStorage. An uncaught throw on this very first line used
+// to kill this entire script before a single button handler further down
+// got registered -- HTML/CSS still rendered fine (that's the browser, not
+// this file), so the page looked "loaded" while being completely dead.
+function safeStorageGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function safeStorageSet(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
+function safeStorageRemove(key) { try { localStorage.removeItem(key); } catch (e) {} }
+let token = safeStorageGet(tokenKey) || "";
 let tracks = [];
 let lastEloImage = null;
 const $ = (id) => document.getElementById(id);
+try {
+  document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  $("goFace")?.addEventListener("click", () => go("face"));
+  $("musicTop")?.addEventListener("click", () => go("music"));
+  $("menu")?.addEventListener("click", () => go("home"));
+} catch (e) { console.error("PRIME nav wiring failed", e); }
+
 function waitForTelegram(timeoutMs = 4000) {
-  // telegram-web-app.js loads with `async` now, so it can finish after our
-  // own deferred scripts start running. Poll briefly instead of assuming
-  // window.Telegram.WebApp already exists -- a slow/blocked fetch of that
-  // external script must degrade to "open PRIME from the bot", never hang
-  // the whole app or make every button silently do nothing.
+  // telegram-web-app.js is a normal blocking <script> in <head> (as
+  // Telegram's own docs recommend), so window.Telegram.WebApp should
+  // already exist by the time this runs. Still poll with a short timeout
+  // rather than a single synchronous read, as a defensive fallback -- a
+  // failure here must degrade to "open PRIME from the bot", never hang the
+  // whole app or make every button silently do nothing.
   return new Promise(resolve => {
     const start = Date.now();
     (function check() {
@@ -47,7 +64,7 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) {
     token = "";
-    localStorage.removeItem(tokenKey);
+    safeStorageRemove(tokenKey);
     showAuth();
     throw new Error(data.error || "Сессия истекла. Открываем Telegram-вход…");
   }
@@ -86,7 +103,7 @@ async function authenticateTelegram() {
         signal: controller.signal
       });
       token = data.token;
-      localStorage.setItem(tokenKey, token);
+      safeStorageSet(tokenKey, token);
       hideAuth();
       await loadProfile();
       toast(`PRIME готов${data.user?.name ? `, ${data.user.name}` : ""}`);
@@ -107,7 +124,7 @@ async function authenticateTelegram() {
           body: JSON.stringify({ initData })
         });
         token = retry.token;
-        localStorage.setItem(tokenKey, token);
+        safeStorageSet(tokenKey, token);
         hideAuth();
         await loadProfile();
         toast(`PRIME готов${retry.user?.name ? `, ${retry.user.name}` : ""}`);
@@ -134,11 +151,6 @@ function go(id) {
   if (id === "face") loadHistories();
   if (id === "leaderboard") loadLeaderboard();
 }
-document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
-$("goFace")?.addEventListener("click", () => go("face"));
-$("musicTop")?.addEventListener("click", () => go("music"));
-$("menu")?.addEventListener("click", () => go("home"));
-
 const input = $("photoInput");
 const preview = $("preview");
 const analyze = $("analyze");
@@ -235,7 +247,7 @@ $("refreshAdvice")?.addEventListener("click", loadAdvice);
   try {
     if (token) { setAuth("Восстанавливаем сессию…"); await withTimeout(loadProfile(), 30000); hideAuth(); await loadEloStatus(); return; }
     await authenticateTelegram();
-  } catch (e) { console.error("PRIME bootstrap failed", e); token = ""; localStorage.removeItem(tokenKey); showAuth(); setAuth(`Ошибка загрузки PRIME: ${e.message}`); }
+  } catch (e) { console.error("PRIME bootstrap failed", e); token = ""; safeStorageRemove(tokenKey); showAuth(); setAuth(`Ошибка загрузки PRIME: ${e.message}`); }
 })();
 
 // Defensive CSS only: #auth is already permanently disabled via style.css

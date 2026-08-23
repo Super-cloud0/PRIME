@@ -29,7 +29,7 @@
       const initData = String(tg.initData || "");
       tg.ready();
       tg.expand();
-      if (initData) localStorage.removeItem("prime_token");
+      if (initData) { try { localStorage.removeItem("prime_token"); } catch (e) {} }
     } catch (error) {
       console.warn("PRIME Telegram session bootstrap failed", error);
     }
