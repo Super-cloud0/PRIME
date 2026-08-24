@@ -5,7 +5,6 @@ COPY requirements-prod.txt .
 RUN pip install --no-cache-dir -r requirements-prod.txt
 COPY . .
 RUN useradd --create-home --uid 10001 prime && mkdir -p /app/media && chown -R prime:prime /app
-RUN chmod +x /app/start_prod.sh
 USER prime
 EXPOSE 8765
-CMD ["/app/start_prod.sh"]
+CMD gunicorn server_face_override:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
