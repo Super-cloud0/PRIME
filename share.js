@@ -28,6 +28,25 @@
     refresh();
   }
   function refresh(){if(!$("primeSharePanel"))return;const score=Number($("faceScore")?.textContent||0),tier=$("type")?.textContent||scoreTier(score),elo=$("elo")?.textContent||"1000";$("shareScore").textContent=score;$("shareTier").textContent=tier;$("shareElo").textContent=`ELO ${elo}`}
-  const result=$("faceResult");if(result){const ob=new MutationObserver(()=>{render();refresh()});ob.observe(result,{subtree:true,childList:true,characterData:true})}
+  const result=$("faceResult");
+  if(result){
+    // render()/refresh() write INTO this same subtree (appendChild, textContent),
+    // and this observer watches that subtree with subtree+characterData -- so
+    // without disconnecting first, every update the panel makes to itself fires
+    // the observer again, forever. That infinite MutationObserver feedback loop
+    // was saturating the JS microtask queue on every single page load (#faceResult
+    // always exists in the DOM, analyzed or not) -- the page painted fine, but the
+    // main thread never went idle again, so no click handler anywhere could ever
+    // run. This is the actual cause of "page loads, buttons do nothing": it has
+    // nothing to do with Telegram or fonts, it is 100% this feedback loop, and it
+    // reproduced identically on Render, Railway, and localhost because it never
+    // depended on the network at all.
+    const ob=new MutationObserver(()=>{
+      ob.disconnect();
+      render();refresh();
+      ob.observe(result,{subtree:true,childList:true,characterData:true});
+    });
+    ob.observe(result,{subtree:true,childList:true,characterData:true});
+  }
   document.addEventListener("DOMContentLoaded",()=>{render();refresh()});setTimeout(()=>{render();refresh()},800);
 })();
