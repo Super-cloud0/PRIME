@@ -1,11 +1,13 @@
 """Production entrypoint for calibrated PRIME scoring and ELO."""
 
 import db_guard  # noqa: F401,E402
+import base64
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from flask import jsonify
+from flask import jsonify, request
 
 from server import app
 import server_prod
@@ -125,6 +127,80 @@ def _face_ai_trend():
 
 if _original_face_ai is not None:
     app.view_functions["face_ai"] = _face_ai_trend
+
+
+# Manual two-photo comparison ("face battle"). Unlike /api/elo/match-v2 this
+# is NOT matchmaking and does not touch ELO or the leaderboard -- the caller
+# supplies both photos directly (e.g. themselves vs a friend, or two public
+# figures for content), gets both calibrated scores back plus a winner, and
+# nothing is persisted. Runs both Gemini calls concurrently so the request
+# doesn't take 2x as long as a single analysis.
+_compare_pool = ThreadPoolExecutor(max_workers=4)
+
+
+def _analyze_one_for_compare(raw: bytes, mime: str) -> dict:
+    raw_result = server_prod.gemini_json("", base64.b64encode(raw).decode("ascii"), mime)
+    metrics = {
+        key: max(0, min(100, int(value)))
+        for key, value in (raw_result.get("metrics") or {}).items()
+        if isinstance(value, (int, float))
+    }
+    score = _strict_trend_score(metrics)
+    tier = _trend_tier(score)
+    return {
+        "score": score,
+        "tier": tier,
+        "type": tier,
+        "metrics": metrics,
+        "summary": str(raw_result.get("summary", ""))[:2000],
+        "confidence": max(0, min(100, int(raw_result.get("confidence", 0)))),
+    }
+
+
+def _decode_compare_photo(data: dict, key: str):
+    entry = data.get(key) if isinstance(data.get(key), dict) else {}
+    image_b64 = entry.get("image")
+    if not image_b64 or not isinstance(image_b64, str):
+        return None, (jsonify({"error": f"photo '{key}' is required"}), 400)
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except Exception:
+        return None, (jsonify({"error": f"photo '{key}' is invalid"}), 400)
+    if len(raw) > 8 * 1024 * 1024:
+        return None, (jsonify({"error": f"photo '{key}' is too large"}), 413)
+    return (raw, entry.get("mime", "image/jpeg")), None
+
+
+@app.post("/api/face/compare")
+@server_prod.auth_required
+@server_prod.limiter.limit("5 per minute")
+def face_compare(user):
+    data = request.get_json(silent=True) or {}
+    photo_a, error_a = _decode_compare_photo(data, "a")
+    if error_a:
+        return error_a
+    photo_b, error_b = _decode_compare_photo(data, "b")
+    if error_b:
+        return error_b
+
+    try:
+        future_a = _compare_pool.submit(_analyze_one_for_compare, *photo_a)
+        future_b = _compare_pool.submit(_analyze_one_for_compare, *photo_b)
+        result_a = future_a.result()
+        result_b = future_b.result()
+    except requests.RequestException:
+        return jsonify({"error": "AI service temporarily unavailable"}), 502
+    except Exception:
+        app.logger.exception("PRIME face compare failed")
+        return jsonify({"error": "AI analysis failed"}), 502
+
+    if result_a["score"] == result_b["score"]:
+        winner = "tie"
+    else:
+        winner = "a" if result_a["score"] > result_b["score"] else "b"
+
+    return jsonify({"a": result_a, "b": result_b, "winner": winner})
+
 
 # Register the current photo-based ELO implementation. It preserves the
 # existing /api/elo/match-v2 route used by the Mini App and adds a practice

@@ -218,6 +218,76 @@ analyze?.addEventListener("click", async () => {
   } finally { analyze.disabled = false; }
 });
 
+const compareInputA = $("compareInputA");
+const compareInputB = $("compareInputB");
+const previewCompareA = $("previewCompareA");
+const previewCompareB = $("previewCompareB");
+const runCompareBtn = $("runCompare");
+let compareFileA = null, compareFileB = null;
+
+$("pickCompareA")?.addEventListener("click", () => compareInputA?.click());
+$("pickCompareB")?.addEventListener("click", () => compareInputB?.click());
+
+function handleCompareFile(slot, file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  if (slot === "a") {
+    compareFileA = file;
+    if (previewCompareA) { previewCompareA.src = url; previewCompareA.classList.remove("hidden"); }
+  } else {
+    compareFileB = file;
+    if (previewCompareB) { previewCompareB.src = url; previewCompareB.classList.remove("hidden"); }
+  }
+  if (runCompareBtn) runCompareBtn.disabled = !(compareFileA && compareFileB);
+  if ($("compareStatus")) $("compareStatus").textContent = (compareFileA && compareFileB) ? t("compare_status_both_ready") : t("compare_status_ready");
+}
+compareInputA?.addEventListener("change", e => handleCompareFile("a", e.target.files?.[0]));
+compareInputB?.addEventListener("change", e => handleCompareFile("b", e.target.files?.[0]));
+
+async function runCompare() {
+  if (!compareFileA || !compareFileB) return toast(t("compare_error_need_both"));
+  runCompareBtn.disabled = true;
+  if ($("compareStatus")) $("compareStatus").textContent = t("compare_status_comparing");
+  try {
+    const [dataA, dataB] = await Promise.all([fileToB64(compareFileA), fileToB64(compareFileB)]);
+    const r = await api("/api/face/compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ a: { image: dataA, mime: "image/jpeg" }, b: { image: dataB, mime: "image/jpeg" } })
+    });
+    if ($("compareResultPhotoA") && previewCompareA) $("compareResultPhotoA").src = previewCompareA.src;
+    if ($("compareResultPhotoB") && previewCompareB) $("compareResultPhotoB").src = previewCompareB.src;
+    if ($("compareScoreA")) $("compareScoreA").textContent = r.a.score;
+    if ($("compareScoreB")) $("compareScoreB").textContent = r.b.score;
+    if ($("compareTierA")) $("compareTierA").textContent = r.a.tier;
+    if ($("compareTierB")) $("compareTierB").textContent = r.b.tier;
+    $("compareCardA")?.classList.toggle("winner", r.winner === "a");
+    $("compareCardB")?.classList.toggle("winner", r.winner === "b");
+    $("compareBadgeA")?.classList.toggle("hidden", r.winner !== "a");
+    $("compareBadgeB")?.classList.toggle("hidden", r.winner !== "b");
+    if ($("compareStatus")) $("compareStatus").textContent = r.winner === "tie" ? t("compare_tie_label") : t("compare_status_done");
+    $("compareResult")?.classList.remove("hidden");
+  } catch (e) {
+    if ($("compareStatus")) $("compareStatus").textContent = e.message;
+    toast(e.message);
+  } finally {
+    runCompareBtn.disabled = false;
+  }
+}
+$("runCompare")?.addEventListener("click", runCompare);
+$("resetCompare")?.addEventListener("click", () => {
+  compareFileA = null; compareFileB = null;
+  if (compareInputA) compareInputA.value = "";
+  if (compareInputB) compareInputB.value = "";
+  previewCompareA?.classList.add("hidden");
+  previewCompareB?.classList.add("hidden");
+  $("compareResult")?.classList.add("hidden");
+  $("compareCardA")?.classList.remove("winner");
+  $("compareCardB")?.classList.remove("winner");
+  if (runCompareBtn) runCompareBtn.disabled = true;
+  if ($("compareStatus")) $("compareStatus").textContent = t("compare_status_ready");
+});
+
 function ensureEloUI() {
   let box = $("eloBox"); if (box) return box;
   const add = $("addElo"); if (!add) return null;

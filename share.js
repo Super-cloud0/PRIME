@@ -13,6 +13,14 @@
   const $=id=>document.getElementById(id);
   const t=(...args)=>(window.PrimeI18N?window.PrimeI18N.t(...args):args[0]);
   const scoreTier=s=>{const n=Math.max(1,Math.min(100,Number(s)||1));if(n<=29)return"SUB 3";if(n<=44)return"SUB 5";if(n<=59)return"LTN";if(n<=74)return"MTN";if(n<=79)return"HTN";if(n<=94)return"CHAD";return"TRUE ADAM"};
+  // Rarity ladder for the shareable result card: each tier gets its own
+  // accent color and a filled-star count (like a trading-card rarity
+  // indicator), so a screenshot instantly signals how rare the result is
+  // instead of always looking like the same plain red card.
+  const TIER_ORDER=["SUB 3","SUB 5","LTN","MTN","HTN","CHAD","TRUE ADAM"];
+  const TIER_COLORS=["#8a8a8a","#aeaeae","#c9903f","#ff3b42","#ff7a1a","#ffcc33","#f3e6ff"];
+  const tierRank=tier=>{const i=TIER_ORDER.indexOf(String(tier||"").toUpperCase());return i<0?3:i};
+  const tierColor=rank=>TIER_COLORS[rank];
   const shareUrl=()=>location.origin+location.pathname;
   const shareText=()=>{const score=Number($("faceScore")?.textContent||0),tier=$("type")?.textContent||scoreTier(score),elo=$("elo")?.textContent||"1000";return t("share_text",score,tier,elo)};
   function telegramUrl(){const text=shareText();return `https://t.me/share/url?url=${encodeURIComponent(shareUrl())}&text=${encodeURIComponent(text)}`}
@@ -21,7 +29,7 @@
     const result=$("faceResult");
     if(!result||$("primeSharePanel"))return;
     const panel=document.createElement("div");panel.id="primeSharePanel";panel.className="card";
-    panel.innerHTML=`<div class="section-title"><span>${escapeAttr(t("share_title"))}</span><small>${escapeAttr(t("share_subtitle"))}</small></div><div style="border-radius:20px;padding:22px;background:linear-gradient(145deg,#090909,#222);color:#fff;text-align:center;border:1px solid rgba(255,255,255,.1)"><div style="font-size:11px;letter-spacing:.18em;opacity:.55">${escapeAttr(t("share_score_label"))}</div><div id="shareScore" style="font-size:64px;font-weight:900;line-height:1.05;margin:8px 0">--</div><div id="shareTier" style="font-size:18px;font-weight:800;letter-spacing:.08em">--</div><div id="shareElo" style="margin-top:10px;opacity:.65">ELO --</div><div style="margin-top:16px;font-size:12px;opacity:.5">${escapeAttr(t("share_footer"))}</div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px"><button id="shareTelegram" class="secondary">${escapeAttr(t("share_btn_telegram"))}</button><button id="shareNative" class="primary">${escapeAttr(t("share_btn_native"))}</button></div><button id="shareCopy" class="secondary" style="width:100%;margin-top:10px">${escapeAttr(t("share_btn_copy"))}</button>`;
+    panel.innerHTML=`<div class="section-title"><span>${escapeAttr(t("share_title"))}</span><small>${escapeAttr(t("share_subtitle"))}</small></div><div id="shareCard" class="share-card"><div class="share-card__watermark" aria-hidden="true">PRIME</div><div class="share-card__eyebrow">${escapeAttr(t("share_score_label"))}</div><div id="shareScore" class="share-card__score">--</div><div id="shareTier" class="share-card__tier">--</div><div id="shareStars" class="share-card__stars"></div><div id="shareElo" class="share-card__elo">ELO --</div><div class="share-card__footer">${escapeAttr(t("share_footer"))}</div></div><div class="share-actions"><button id="shareTelegram" class="secondary">${escapeAttr(t("share_btn_telegram"))}</button><button id="shareNative" class="primary">${escapeAttr(t("share_btn_native"))}</button></div><button id="shareCopy" class="secondary" style="width:100%;margin-top:10px">${escapeAttr(t("share_btn_copy"))}</button>`;
     result.appendChild(panel);
     $("shareTelegram").onclick=()=>window.open(telegramUrl(),"_blank");
     $("shareCopy").onclick=async()=>{try{await navigator.clipboard.writeText(shareText()+`\n${shareUrl()}`);if(window.Telegram?.WebApp?.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");toast(t("share_copied"))}catch(e){toast(t("share_copy_failed"))}};
@@ -29,7 +37,24 @@
     refresh();
   }
   function escapeAttr(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]))}
-  function refresh(){if(!$("primeSharePanel"))return;const score=Number($("faceScore")?.textContent||0),tier=$("type")?.textContent||scoreTier(score),elo=$("elo")?.textContent||"1000";$("shareScore").textContent=score;$("shareTier").textContent=tier;$("shareElo").textContent=`ELO ${elo}`}
+  function refresh(){
+    if(!$("primeSharePanel"))return;
+    const score=Number($("faceScore")?.textContent||0),tier=$("type")?.textContent||scoreTier(score),elo=$("elo")?.textContent||"1000";
+    $("shareScore").textContent=score;
+    $("shareTier").textContent=tier;
+    $("shareElo").textContent=`ELO ${elo}`;
+    const rank=tierRank(tier);
+    const card=$("shareCard");
+    if(card){
+      card.style.setProperty("--tc",tierColor(rank));
+      // The top tier gets a slow animated glow (see .share-card--legendary in
+      // style.css) so a "TRUE ADAM" result reads as visibly rarer in a
+      // screenshot, not just a different color.
+      card.classList.toggle("share-card--legendary",rank>=6);
+    }
+    const stars=$("shareStars");
+    if(stars)stars.textContent="★".repeat(rank+1)+"☆".repeat(6-rank);
+  }
   const result=$("faceResult");
   let ob=null;
   function withObserverPaused(fn){
