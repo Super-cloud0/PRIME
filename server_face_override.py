@@ -15,11 +15,33 @@ if _configured_model in {"", "gemini-2.5-flash-lite", "gemini-2.5-flash"}:
     _configured_model = "gemini-3.5-flash-lite"
 server_prod.GEMINI_MODEL = _configured_model
 
-STRICT_FACE_PROMPT = """You are the PRIME visual presentation evaluator.
+# NOTE on this prompt (2026-08-26 fix): the previous version told the model
+# "60-74 can be clearly above-average" as an example of an ordinary result,
+# which gave it a ready-made "safe, polite" answer for any face it couldn't
+# confidently judge -- an LLM asked to rate appearance strongly prefers not
+# to give a below-average score, so it defaulted almost every metric into
+# that exact band. Since the final score is a weighted geometric mean of the
+# six metrics (see _strict_trend_score below), every metric landing near
+# 60-70 meant nearly every photo landed in the same MTN tier regardless of
+# the actual photo. This rewrite removes that anchor, states explicitly that
+# 45-55 is the honest, unremarkable middle most photos should land in, and
+# tells the model that defaulting upward "to be nice" is a failure of the
+# tool's purpose, not a kindness.
+STRICT_FACE_PROMPT = """You are the PRIME visual presentation evaluator, scoring against the FULL general population -- not against the population of people who send photos to a rating app (which skews the comparison set).
 Give a STRICT, RATIONAL and EVIDENCE-BASED 0-100 evaluation of ONLY visible, non-sensitive presentation characteristics. The goal is honest calibration, not kindness and not artificial harshness.
 Do not identify the person. Do not infer or score age, race, ethnicity, religion, health, disability, sexual orientation, or any other sensitive trait. Do not diagnose, speculate about medical/genetic conditions, or sexualize. Evaluate only visible presentation characteristics.
-REFERENCE SCALE: 0-29 SUB 3; 30-44 SUB 5; 45-59 LTN; 60-74 MTN; 75-79 HTN; 80-94 CHAD; 95-100 TRUE ADAM.
-Use the full 0-100 range naturally. Never choose 50 merely because a photo is ordinary and never choose a low score merely to appear strict. 50 is the actual midpoint. Clearly above-average dimensions can be 60-74; genuinely strong ones can be 75-89; exceptional ones can be 90+. Do not cluster every metric around 50. Do not invent weaknesses. Photo quality affects presentation primarily. Score each metric independently before the overall result.
+
+CALIBRATION -- read carefully, this is where evaluators most often go wrong:
+Score each metric (symmetry, proportion, grooming, hair, skin_appearance, presentation) independently, imagining it plotted against the entire general population for that visible characteristic.
+- 45-55 = genuinely typical/average. Most people and most ordinary, unremarkable photos SHOULD land here. This is the honest middle of a bell curve, not a punishment.
+- 56-65 = mildly above average: a bit better than most, not exceptional.
+- 66-80 = clearly above average: stands out.
+- 81-100 = rare, roughly top few percent.
+- The same bands apply symmetrically below 45 for genuinely below-average characteristics.
+Do NOT default to 60-74 as a "safe" answer when a photo is ordinary or hard to judge -- if a metric genuinely looks average, score it 45-55, not 60+. Inflating an ordinary photo into "above average" to avoid sounding unkind defeats the entire purpose of this tool; it is a failure of the task, not politeness.
+Only score a metric above 65 if you can point to specific visible evidence for it (concrete proportions, specific grooming details, etc.) -- never as a generic polite default.
+Do not invent weaknesses either -- if something is genuinely above average, say so with an equally high score. The goal is an accurate spread across the population, in both directions.
+Photo quality affects presentation primarily. Score each metric independently before writing the overall summary.
 Metrics: symmetry, proportion, grooming, hair, skin_appearance, presentation.
 Return ONLY valid JSON with score, type, summary, metrics, tips, confidence. All numeric fields are integers 0-100.
 """
@@ -62,7 +84,12 @@ def _strict_trend_score(metrics: dict, model_score=None) -> int:
         values.append(max(0, min(100, value)))
     geometric = math.exp(sum(w * math.log(max(1.0, v)) for v, w in zip(values, weights)) / sum(weights))
     delta = geometric - 50.0
-    calibrated = 50.0 + math.copysign(abs(delta) ** 1.03, delta)
+    # Exponent raised from 1.03 -> 1.18: with the old prompt every metric
+    # already clustered near 60-70 (delta ~10-20), so amplifying delta barely
+    # mattered -- the prompt fix above is the real fix. This is kept as a
+    # secondary safety margin so the tiers stay well-spread even if the model
+    # still hedges toward the middle on some photos.
+    calibrated = 50.0 + math.copysign(abs(delta) ** 1.18, delta)
     weak_penalty = sum(max(0, 40 - value) * 0.12 for value in values)
     very_weak_penalty = sum(1.5 for value in values if value < 25)
     return max(0, min(100, round(calibrated - weak_penalty - very_weak_penalty)))
