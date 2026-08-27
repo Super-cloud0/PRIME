@@ -55,6 +55,9 @@ class User(db.Model):
     wins = db.Column(db.Integer, nullable=False, default=0)
     losses = db.Column(db.Integer, nullable=False, default=0)
     games = db.Column(db.Integer, nullable=False, default=0)
+    telegram_chat_id = db.Column(db.BigInteger, nullable=True, index=True)
+    reminders_enabled = db.Column(db.Boolean, nullable=False, default=True)
+    last_reminder_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
@@ -125,6 +128,34 @@ def _ensure_face_photo_column():
 
 
 _ensure_face_photo_column()
+
+
+def _ensure_reminder_columns():
+    # Same reasoning as _ensure_face_photo_column(): this deployment's
+    # Dockerfile runs gunicorn directly without `flask db upgrade`, so the
+    # Alembic migration (migrations/versions/0003_weekly_reminders.py) alone
+    # would silently never apply to the live Render Postgres database. This
+    # best-effort check adds the missing "user" columns directly at import
+    # time so weekly reminders work whether or not the migration is run too.
+    try:
+        from sqlalchemy import inspect as _sa_inspect
+        with app.app_context():
+            inspector = _sa_inspect(db.engine)
+            if "user" not in inspector.get_table_names():
+                return  # tables not created yet -- db.create_all()/migration will include the columns
+            columns = {col["name"] for col in inspector.get_columns("user")}
+            with db.engine.begin() as conn:
+                if "telegram_chat_id" not in columns:
+                    conn.execute(db.text('ALTER TABLE "user" ADD COLUMN telegram_chat_id BIGINT'))
+                if "reminders_enabled" not in columns:
+                    conn.execute(db.text('ALTER TABLE "user" ADD COLUMN reminders_enabled BOOLEAN NOT NULL DEFAULT TRUE'))
+                if "last_reminder_at" not in columns:
+                    conn.execute(db.text('ALTER TABLE "user" ADD COLUMN last_reminder_at TIMESTAMP WITH TIME ZONE'))
+    except Exception:
+        app.logger.exception("PRIME auto-migrate for user reminder columns failed (non-fatal)")
+
+
+_ensure_reminder_columns()
 
 
 def password_hash(password: str) -> str:

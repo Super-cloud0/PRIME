@@ -86,10 +86,15 @@ def telegram_auth():
                 email=account_key,
                 password_hash=password_hash(secrets.token_urlsafe(32)),
                 name=display_name,
+                telegram_chat_id=int(telegram_id),
             )
             db.session.add(user)
         else:
             user.name = display_name
+            # Telegram user ids are stable and, for a private chat with the
+            # bot, double as the chat_id sendMessage needs -- keep it fresh
+            # on every login so weekly reminders always have somewhere to go.
+            user.telegram_chat_id = int(telegram_id)
 
         db.session.commit()
         token = jwt_encode(user.id)

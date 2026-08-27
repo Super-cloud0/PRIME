@@ -207,6 +207,11 @@ def face_compare(user):
 # opponent when no real participant is available yet.
 import elo_v3  # noqa: E402,F401
 
+# Weekly check-in reminders: Telegram nudges for users whose last face scan
+# is going stale, plus the opt-in/status routes and the /api/cron endpoint
+# used to trigger a run on demand.
+import reminders  # noqa: E402,F401
+
 __all__ = ["app"]
 
 if __name__ == "__main__":

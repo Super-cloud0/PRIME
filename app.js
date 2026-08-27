@@ -398,8 +398,34 @@ async function loadHistories() {
     }
     if ($("eloHistory")) { const rows = await api("/api/elo/history"); $("eloHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.delta >= 0 ? "+" : ""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : `<div class='muted'>${escapeHtml(t("elo_history_empty"))}</div>`; }
     await loadEloStatus();
+    await loadReminderStatus();
   } catch (e) { console.warn("history:", e); }
 }
+// Weekly check-in reminder toggle, shown on the Face tab's progress card
+// once we know Telegram has a chat to send to (set on every Telegram login).
+async function loadReminderStatus() {
+  const btn = $("remindToggle");
+  if (!btn) return;
+  try {
+    const r = await api("/api/reminders/status");
+    if (!r.linked) { btn.classList.add("hidden"); return; }
+    btn.classList.remove("hidden");
+    btn.dataset.enabled = r.enabled ? "1" : "0";
+    btn.textContent = r.enabled ? t("progress_remind_disable") : t("progress_remind_enable");
+  } catch (e) { console.warn("reminders:", e); }
+}
+async function toggleReminders() {
+  const btn = $("remindToggle");
+  if (!btn) return;
+  const next = btn.dataset.enabled !== "1";
+  try {
+    const r = await api("/api/reminders/opt-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: next }) });
+    btn.dataset.enabled = r.enabled ? "1" : "0";
+    btn.textContent = r.enabled ? t("progress_remind_disable") : t("progress_remind_enable");
+    toast(r.enabled ? t("toast_reminders_on") : t("toast_reminders_off"));
+  } catch (e) { toast(e.message); }
+}
+$("remindToggle")?.addEventListener("click", toggleReminders);
 async function loadLeaderboard() { try { const rows = await api("/api/leaderboard"); if ($("leaderboardList")) $("leaderboardList").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>#${x.rank} · ${escapeHtml(x.name)}</b><span>${x.elo} ELO · ${x.prime_score}/100 · ${tierForScore(x.prime_score)} · ${x.wins}W/${x.losses}L</span></div>`).join("") : `<div class='muted'>${escapeHtml(t("leaderboard_empty"))}</div>`; } catch (e) { toast(e.message); } }
 async function loadMusic() { try { tracks = await api("/api/music"); if ($("songs")) $("songs").innerHTML = tracks.length ? tracks.map(tr => `<div class="song"><button data-play="${tr.id}">▶</button><b>${escapeHtml(tr.name)}</b><button data-del="${tr.id}">×</button></div>`).join("") : `<div class='song'>${escapeHtml(t("music_empty"))}</div>`; document.querySelectorAll("[data-play]").forEach(b => b.addEventListener("click", () => playTrack(b.dataset.play))); document.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => { await api(`/api/music/${b.dataset.del}`, { method: "DELETE" }); await loadMusic(); toast(t("toast_track_deleted")); })); } catch (e) { toast(e.message); } }
 async function playTrack(id) { const tr = tracks.find(x => String(x.id) === String(id)); if (!tr) return; if ($("audio")) { $("audio").src = tr.url; $("nowPlaying").textContent = tr.name; await $("audio").play().catch(() => {}); } }
@@ -429,6 +455,7 @@ document.addEventListener("prime:langchange", () => {
   if (active === "face") loadHistories();
   if (active === "leaderboard") loadLeaderboard();
   if ($("eloBox")) loadEloStatus();
+  if ($("remindToggle")) loadReminderStatus();
 });
 
 (async function bootstrap() {

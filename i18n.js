@@ -70,6 +70,10 @@
         else word = "недель";
         return `За ${n} ${word}`;
       },
+      progress_remind_enable: "🔔 Напоминать раз в неделю",
+      progress_remind_disable: "🔕 Отключить напоминания",
+      toast_reminders_on: "Напоминания включены — раз в неделю пришлём сообщение в Telegram",
+      toast_reminders_off: "Напоминания выключены",
       music_eyebrow: "MOGGER MODE",
       music_title: "Музыка",
       music_sub: "Треки хранятся в твоей персональной библиотеке на сервере.",
@@ -114,7 +118,7 @@
       metric_presentation: "Презентация",
       elo_title: "⚔ PRIME ELO",
       elo_voluntary: "участие добровольное",
-      elo_hint: "Побледнее проанализированное фото используется только для ELO-матчей.",
+      elo_hint: "Последнее проанализированное фото используется только для ELO-матчей.",
       elo_enable: "ВКЛЮЧИТЬ ELO",
       elo_disable: "ВЫКЛЮЧИТЬ ELO",
       elo_checking: "Проверка…",
@@ -220,6 +224,10 @@
         const n = Math.abs(Number(weeks) || 0);
         return `Over ${n} week${n === 1 ? "" : "s"}`;
       },
+      progress_remind_enable: "🔔 Remind me weekly",
+      progress_remind_disable: "🔕 Turn off reminders",
+      toast_reminders_on: "Reminders on — we'll ping you in Telegram once a week",
+      toast_reminders_off: "Reminders off",
       music_eyebrow: "MOGGER MODE",
       music_title: "Music",
       music_sub: "Tracks are stored in your personal library on the server.",
