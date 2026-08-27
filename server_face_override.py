@@ -212,6 +212,10 @@ import elo_v3  # noqa: E402,F401
 # used to trigger a run on demand.
 import reminders  # noqa: E402,F401
 
+# Business analytics: registration/activation funnel behind a password-gated
+# /admin page, plus the bot-contact tracking event the funnel needs.
+import analytics  # noqa: E402,F401
+
 __all__ = ["app"]
 
 if __name__ == "__main__":
