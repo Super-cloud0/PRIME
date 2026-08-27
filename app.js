@@ -154,7 +154,7 @@ function go(id) {
   if (id === "music") loadMusic();
   if (id === "face") loadHistories();
   if (id === "leaderboard") loadLeaderboard();
-  if (id === "pro") loadProStatus();
+  if (id === "pro") { loadProStatus(); loadReferralLink(); }
 }
 const input = $("photoInput");
 const preview = $("preview");
@@ -532,6 +532,34 @@ async function buyPro(plan = "weekly") {
 $("buyProBtn")?.addEventListener("click", () => buyPro("weekly"));
 $("buyProLifetimeBtn")?.addEventListener("click", () => buyPro("lifetime"));
 $("adviceUnlockBtn")?.addEventListener("click", () => buyPro("weekly"));
+
+// Personal referral link (t.me/<bot>?start=ref_<id>) shown as a plain,
+// copy-ready field on the PRIME Pro page -- separate from share.js's
+// share-card panel, which only appears after analyzing a photo and embeds
+// the link inside a templated share message rather than showing it on its
+// own. This is for the "just give me the raw link for my bio" case.
+let referralLink = null;
+async function loadReferralLink() {
+  const box = $("referralLinkBox");
+  if (!box) return;
+  try {
+    const r = await api("/api/growth/referral-link");
+    referralLink = r.link || null;
+    box.textContent = referralLink || t("referral_not_ready");
+    if ($("copyReferralBtn")) $("copyReferralBtn").disabled = !referralLink;
+  } catch (e) {
+    box.textContent = t("referral_not_ready");
+    referralLink = null;
+  }
+}
+$("copyReferralBtn")?.addEventListener("click", async () => {
+  if (!referralLink) return;
+  try {
+    await navigator.clipboard.writeText(referralLink);
+    if (window.Telegram?.WebApp?.HapticFeedback) window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
+    toast(t("referral_copied"));
+  } catch (e) { toast(t("referral_copy_failed")); }
+});
 
 // Re-render whatever the current view already shows (menus, statuses,
 // empty-states) when the language changes -- new fetches naturally come

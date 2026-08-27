@@ -59,3 +59,4 @@
 .pro-locked{text-align:center;border:1px solid #4a1a1f;background:linear-gradient(145deg,#170b0d,#0b0b0b)}
 .pro-locked b{display:block;font-size:13px;margin-bottom:6px}
 .pro-locked p{margin:0 0 12px}
+.referral-link-box{margin:4px 0 11px;padding:11px 12px;border:1px dashed #333;border-radius:10px;background:#0c0c0c;color:#bbb;font-size:11px;word-break:break-all;font-family:"Courier New",monospace}
