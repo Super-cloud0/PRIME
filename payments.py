@@ -22,10 +22,19 @@ app = server_prod.app
 PRIME_PRO_PRICE_STARS = int(os.environ.get("PRIME_PRO_PRICE_STARS", "150"))
 PRIME_PRO_DURATION_DAYS = int(os.environ.get("PRIME_PRO_DURATION_DAYS", "7"))
 FREE_BATTLE_DAILY_LIMIT = int(os.environ.get("FREE_BATTLE_DAILY_LIMIT", "2"))
-# Every invoice payload starts with this so the webhook can recognize and
-# safely ignore payloads it didn't create (e.g. if this bot is ever reused
-# for something else) instead of trusting arbitrary payload strings.
+# Every invoice payload starts with one of these so the webhook can recognize
+# and safely ignore payloads it didn't create (e.g. if this bot is ever
+# reused for something else) instead of trusting arbitrary payload strings.
 PRO_INVOICE_PAYLOAD_PREFIX = "prime_pro_7d"
+# One-time purchase alternative to the weekly subscription -- math-wise, a
+# single higher-ticket sale is worth more toward a fixed revenue goal than a
+# weekly sub with typical churn on this kind of app (see the business-plan
+# calculator this was modeled against), and it removes renewal risk entirely.
+PRIME_LIFETIME_PRICE_STARS = int(os.environ.get("PRIME_LIFETIME_PRICE_STARS", "999"))
+LIFETIME_INVOICE_PAYLOAD_PREFIX = "prime_pro_lifetime"
+# Not a real forever -- just far enough out that is_pro() never has to special-
+# case it, so every gate written against pro_until keeps working unchanged.
+LIFETIME_DURATION_DAYS = 36500
 
 
 class ProSubscription(db.Model):
@@ -39,6 +48,7 @@ class ProSubscription(db.Model):
     __tablename__ = "pro_subscription"
     user_id = db.Column(db.String(36), db.ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
     pro_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    is_lifetime = db.Column(db.Boolean, nullable=False, default=False)
 
 
 class StarPayment(db.Model):
@@ -64,6 +74,30 @@ class DailyUsage(db.Model):
     day = db.Column(db.String(10), nullable=False)  # UTC "YYYY-MM-DD", not a DateTime -- it's a bucket key, not an instant
     count = db.Column(db.Integer, nullable=False, default=0)
     __table_args__ = (db.UniqueConstraint("user_id", "feature", "day", name="uq_daily_usage_user_feature_day"),)
+
+
+def _ensure_lifetime_column():
+    # pro_subscription shipped before is_lifetime existed -- if this ever runs
+    # against a deployment that already created the table with the old shape,
+    # db.create_all() alone won't add the missing column (same reasoning as
+    # server_prod.py's _ensure_*_column helpers). Harmless no-op on a fresh
+    # database, where create_all() below creates the table with the column
+    # already in place.
+    try:
+        from sqlalchemy import inspect as _sa_inspect
+        with app.app_context():
+            inspector = _sa_inspect(db.engine)
+            if "pro_subscription" not in inspector.get_table_names():
+                return
+            columns = {col["name"] for col in inspector.get_columns("pro_subscription")}
+            if "is_lifetime" not in columns:
+                with db.engine.begin() as conn:
+                    conn.execute(db.text('ALTER TABLE pro_subscription ADD COLUMN is_lifetime BOOLEAN NOT NULL DEFAULT FALSE'))
+    except Exception:
+        app.logger.exception("PRIME auto-migrate for pro_subscription.is_lifetime failed (non-fatal)")
+
+
+_ensure_lifetime_column()
 
 
 # Both tables are brand new, so (like analytics.py's AnalyticsEvent) call
@@ -101,9 +135,11 @@ def _pro_payload(user: User) -> dict:
     sub = _subscription_for(user.id)
     return {
         "is_pro": is_pro(user),
+        "is_lifetime": bool(sub and sub.is_lifetime),
         "pro_until": sub.pro_until.isoformat() if sub and sub.pro_until else None,
         "price_stars": PRIME_PRO_PRICE_STARS,
         "duration_days": PRIME_PRO_DURATION_DAYS,
+        "lifetime_price_stars": PRIME_LIFETIME_PRICE_STARS,
         "battle_daily_limit": FREE_BATTLE_DAILY_LIMIT,
     }
 
@@ -119,58 +155,78 @@ def pay_status(user):
 def create_invoice(user):
     if not server_module.TELEGRAM_BOT_TOKEN:
         return jsonify({"error": "TELEGRAM_BOT_TOKEN is not configured"}), 503
+
+    plan = str((request.get_json(silent=True) or {}).get("plan", "weekly")).strip().lower()
+    if plan == "lifetime":
+        prefix, price, title = LIFETIME_INVOICE_PAYLOAD_PREFIX, PRIME_LIFETIME_PRICE_STARS, "PRIME Pro Навсегда"
+        description = "Разовая покупка: полный разбор по всем 6 метрикам, конкретные советы и безлимит батлов сравнения — без ограничения по времени."
+        price_label = "PRIME Pro (навсегда)"
+    else:
+        plan = "weekly"
+        prefix, price, title = PRO_INVOICE_PAYLOAD_PREFIX, PRIME_PRO_PRICE_STARS, "PRIME Pro"
+        description = (
+            f"Полный разбор по всем 6 метрикам, конкретные советы на неделю и безлимит батлов "
+            f"сравнения на {PRIME_PRO_DURATION_DAYS} дней."
+        )
+        price_label = f"PRIME Pro ({PRIME_PRO_DURATION_DAYS} дней)"
+
     # user.id is embedded directly in the payload (not looked up separately)
     # so the webhook can grant Pro from the payload alone, with no session/
     # cookie context available at that point -- the trailing random suffix is
     # just so payloads aren't guessable/replayable across users.
-    payload = f"{PRO_INVOICE_PAYLOAD_PREFIX}:{user.id}:{uuid.uuid4().hex[:12]}"
+    payload = f"{prefix}:{user.id}:{uuid.uuid4().hex[:12]}"
     try:
         data = server_module.telegram_api("createInvoiceLink", {
-            "title": "PRIME Pro",
-            "description": (
-                f"Полный разбор по всем 6 метрикам, конкретные советы на неделю и безлимит батлов "
-                f"сравнения на {PRIME_PRO_DURATION_DAYS} дней."
-            ),
+            "title": title,
+            "description": description,
             "payload": payload,
             # Telegram Stars payments: currency must be "XTR" and
             # provider_token must be an empty string (no external provider).
             "currency": "XTR",
             "provider_token": "",
-            "prices": [{"label": f"PRIME Pro ({PRIME_PRO_DURATION_DAYS} дней)", "amount": PRIME_PRO_PRICE_STARS}],
+            "prices": [{"label": price_label, "amount": price}],
         })
     except Exception as exc:
         app.logger.exception("PRIME payments: createInvoiceLink failed")
         return jsonify({"error": f"failed to create invoice: {exc}"}), 502
-    return jsonify({"invoice_link": data.get("result"), "price_stars": PRIME_PRO_PRICE_STARS})
+    return jsonify({"invoice_link": data.get("result"), "price_stars": price, "plan": plan})
 
 
 def _grant_pro_from_payment(message: dict, successful_payment: dict):
     payload = str(successful_payment.get("invoice_payload", ""))
     parts = payload.split(":")
-    if len(parts) < 2 or parts[0] != PRO_INVOICE_PAYLOAD_PREFIX:
+    if len(parts) < 2 or parts[0] not in (PRO_INVOICE_PAYLOAD_PREFIX, LIFETIME_INVOICE_PAYLOAD_PREFIX):
         app.logger.warning("PRIME payments: unrecognized invoice payload %r", payload)
         return
+    is_lifetime_purchase = parts[0] == LIFETIME_INVOICE_PAYLOAD_PREFIX
     user_id = parts[1]
     user = User.query.get(user_id)
     if user is None:
         app.logger.warning("PRIME payments: payment for unknown user_id %r", user_id)
         return
 
+    default_amount = PRIME_LIFETIME_PRICE_STARS if is_lifetime_purchase else PRIME_PRO_PRICE_STARS
     try:
-        amount = int(successful_payment.get("total_amount", PRIME_PRO_PRICE_STARS))
+        amount = int(successful_payment.get("total_amount", default_amount))
     except (TypeError, ValueError):
-        amount = PRIME_PRO_PRICE_STARS
+        amount = default_amount
 
     now = datetime.now(timezone.utc)
     sub = _subscription_for(user.id)
     if sub is None:
         sub = ProSubscription(user_id=user.id)
         db.session.add(sub)
-    # Stack on top of remaining time rather than from "now" if they renew
-    # early -- a normal subscription-extension behavior, not a special case.
-    current_until = _aware_utc(sub.pro_until)
-    base = current_until if current_until and current_until > now else now
-    sub.pro_until = base + timedelta(days=PRIME_PRO_DURATION_DAYS)
+    if is_lifetime_purchase:
+        sub.is_lifetime = True
+        sub.pro_until = now + timedelta(days=LIFETIME_DURATION_DAYS)
+    else:
+        # Stack on top of remaining time rather than from "now" if they renew
+        # early -- a normal subscription-extension behavior, not a special
+        # case. A lifetime holder buying the weekly plan again (unlikely, but
+        # not blocked) just keeps their lifetime status untouched.
+        current_until = _aware_utc(sub.pro_until)
+        base = current_until if current_until and current_until > now else now
+        sub.pro_until = base + timedelta(days=PRIME_PRO_DURATION_DAYS)
 
     db.session.add(StarPayment(
         user_id=user.id,
@@ -182,14 +238,21 @@ def _grant_pro_from_payment(message: dict, successful_payment: dict):
 
     chat_id = (message.get("chat") or {}).get("id") or user.telegram_chat_id
     if chat_id:
+        if sub.is_lifetime:
+            confirmation_text = (
+                "✅ <b>PRIME Pro Навсегда активирован!</b>\n\n"
+                "Без ограничения по времени доступны: полный разбор по метрикам с конкретными советами и безлимит батлов сравнения."
+            )
+        else:
+            confirmation_text = (
+                "✅ <b>PRIME Pro активирован!</b>\n\n"
+                f"Действует до {sub.pro_until.strftime('%d.%m.%Y')}.\n"
+                "Теперь доступны: полный разбор по метрикам с конкретными советами и безлимит батлов сравнения."
+            )
         try:
             server_module.telegram_api("sendMessage", {
                 "chat_id": int(chat_id),
-                "text": (
-                    "✅ <b>PRIME Pro активирован!</b>\n\n"
-                    f"Действует до {sub.pro_until.strftime('%d.%m.%Y')}.\n"
-                    "Теперь доступны: полный разбор по метрикам с конкретными советами и безлимит батлов сравнения."
-                ),
+                "text": confirmation_text,
                 "parse_mode": "HTML",
             })
         except Exception:
@@ -213,7 +276,7 @@ def _webhook_with_payments():
     if pre_checkout:
         try:
             payload = str(pre_checkout.get("invoice_payload", ""))
-            ok = payload.startswith(PRO_INVOICE_PAYLOAD_PREFIX + ":")
+            ok = payload.startswith(PRO_INVOICE_PAYLOAD_PREFIX + ":") or payload.startswith(LIFETIME_INVOICE_PAYLOAD_PREFIX + ":")
             answer = {"pre_checkout_query_id": pre_checkout.get("id"), "ok": ok}
             if not ok:
                 answer["error_message"] = "Invoice expired or invalid — please try again from the app."

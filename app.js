@@ -465,12 +465,23 @@ $("refreshAdvice")?.addEventListener("click", loadAdvice);
 async function loadProStatus() {
   try {
     const s = await api("/api/pay/status");
-    if ($("proStatus")) $("proStatus").textContent = s.is_pro
-      ? t("pro_status_active", new Date(s.pro_until).toLocaleDateString("ru-RU"))
-      : t("pro_status_free");
+    if ($("proStatus")) $("proStatus").textContent = s.is_lifetime
+      ? t("pro_status_lifetime")
+      : s.is_pro
+        ? t("pro_status_active", new Date(s.pro_until).toLocaleDateString("ru-RU"))
+        : t("pro_status_free");
     if ($("proBenefit2")) $("proBenefit2").textContent = t("pro_benefit_2", s.battle_daily_limit);
     if ($("proPrice")) $("proPrice").textContent = t("pro_price_label", s.price_stars, s.duration_days);
     if ($("buyProBtn")) $("buyProBtn").textContent = s.is_pro ? t("pro_buy_btn_renew") : t("pro_buy_btn");
+    if ($("proPriceLifetime")) $("proPriceLifetime").textContent = t("pro_price_lifetime_label", s.lifetime_price_stars);
+    // A lifetime holder has nothing further to buy -- hide the weekly plan's
+    // renew button and the lifetime button both, rather than showing either
+    // in a state that doesn't apply to them.
+    if ($("buyProBtn")) $("buyProBtn").classList.toggle("hidden", !!s.is_lifetime);
+    if ($("buyProLifetimeBtn")) $("buyProLifetimeBtn").classList.toggle("hidden", !!s.is_lifetime);
+    const lifetimeDivider = $("buyProLifetimeBtn")?.previousElementSibling?.previousElementSibling;
+    if (lifetimeDivider) lifetimeDivider.classList.toggle("hidden", !!s.is_lifetime);
+    if ($("proPriceLifetime")) $("proPriceLifetime").classList.toggle("hidden", !!s.is_lifetime);
     if ($("rankLabel") && s.is_pro && !$("rankLabel").textContent.includes("PRO")) {
       $("rankLabel").textContent = `${$("rankLabel").textContent} · PRO`;
     }
@@ -478,12 +489,16 @@ async function loadProStatus() {
   } catch (e) { console.warn("Pro status:", e); return null; }
 }
 
-async function buyPro() {
-  const btn = $("buyProBtn");
+async function buyPro(plan = "weekly") {
+  const btn = plan === "lifetime" ? $("buyProLifetimeBtn") : $("buyProBtn");
   if (btn) btn.disabled = true;
   if ($("proStatus")) $("proStatus").textContent = t("pro_buy_pending");
   try {
-    const r = await api("/api/pay/create-invoice", { method: "POST" });
+    const r = await api("/api/pay/create-invoice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan }),
+    });
     const link = r.invoice_link;
     const wa = window.Telegram && window.Telegram.WebApp;
     if (wa && typeof wa.openInvoice === "function") {
@@ -514,8 +529,9 @@ async function buyPro() {
     if (btn) btn.disabled = false;
   }
 }
-$("buyProBtn")?.addEventListener("click", buyPro);
-$("adviceUnlockBtn")?.addEventListener("click", buyPro);
+$("buyProBtn")?.addEventListener("click", () => buyPro("weekly"));
+$("buyProLifetimeBtn")?.addEventListener("click", () => buyPro("lifetime"));
+$("adviceUnlockBtn")?.addEventListener("click", () => buyPro("weekly"));
 
 // Re-render whatever the current view already shows (menus, statuses,
 // empty-states) when the language changes -- new fetches naturally come
