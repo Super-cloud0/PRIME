@@ -51,6 +51,15 @@
 
   .status{font-size:11px;color:var(--muted);text-align:center;padding:30px 0}
   canvas{display:block;width:100%}
+
+  .growth-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+  .growth-item{border:1px solid var(--line);background:var(--card2);border-radius:11px;padding:12px 10px;text-align:center}
+  .growth-item b{display:block;font-size:22px;font-weight:900;color:#8a5cff;letter-spacing:-.5px}
+  .growth-item span{display:block;font-size:9px;color:var(--muted);margin-top:4px;line-height:1.35}
+  .channel-list{display:flex;flex-wrap:wrap;gap:8px;font-size:10px;color:var(--muted)}
+  .channel-list b{color:#ccc;font-weight:800}
+  .channel-chip{border:1px solid var(--line);background:var(--card2);border-radius:99px;padding:5px 11px}
+  .growth-empty{font-size:11px;color:var(--muted);text-align:center;padding:10px 0}
 </style>
 </head>
 <body>
@@ -80,7 +89,13 @@
         <span><i style="background:#555"></i>Контакты с ботом</span>
         <span><i style="background:#ff383e"></i>Регистрации</span>
         <span><i style="background:#3ddc73"></i>Активации</span>
+        <span><i style="background:#8a5cff"></i>Рефералы</span>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title"><span>Рост &middot; рефералка и шеринг</span></div>
+      <div id="growthStats"></div>
     </div>
 
     <div id="genTime" class="note"></div>
@@ -137,6 +152,25 @@
     $("genTime").textContent = "Обновлено: " + gen.toLocaleString("ru-RU");
   }
 
+  const CHANNEL_LABELS = { telegram: "Telegram", download: "Скачать", native: "Системный шеринг", copy: "Копировать", unknown: "Другое" };
+
+  function renderGrowth(growth) {
+    if (!growth) { $("growthStats").innerHTML = `<div class="growth-empty">Нет данных</div>`; return; }
+    const g = growth;
+    const registeredPct = g.referral_to_register_pct != null ? ` (${g.referral_to_register_pct}%)` : "";
+    const channels = Object.entries(g.share_clicks_by_channel || {}).sort((a, b) => b[1] - a[1]);
+    const channelHtml = channels.length
+      ? `<div class="channel-list">${channels.map(([key, n]) => `<span class="channel-chip"><b>${fmt(n)}</b> ${CHANNEL_LABELS[key] || key}</span>`).join("")}</div>`
+      : `<div class="growth-empty">Пока никто не нажимал "поделиться"</div>`;
+    $("growthStats").innerHTML = `
+      <div class="growth-grid">
+        <div class="growth-item"><b>${fmt(g.referrals.total)}</b><span>переходы по рефералке (7д: ${fmt(g.referrals.last7d)})</span></div>
+        <div class="growth-item"><b>${fmt(g.referred_registered)}${registeredPct}</b><span>из них зарегистрировались</span></div>
+        <div class="growth-item"><b>${fmt(g.share_clicks.total)}</b><span>клики "поделиться" (7д: ${fmt(g.share_clicks.last7d)})</span></div>
+      </div>
+      ${channelHtml}`;
+  }
+
   function drawChart(daily) {
     const canvas = $("chart");
     const cssWidth = canvas.parentElement.clientWidth || 320;
@@ -155,9 +189,10 @@
     const n = daily.length;
     if (!n) return;
 
-    const maxVal = Math.max(1, ...daily.map(d => Math.max(d.bot_contacts, d.registrations, d.activations)));
+    const order = ["bot_contacts", "registrations", "activations", "referrals"];
+    const maxVal = Math.max(1, ...daily.map(d => Math.max(...order.map(k => d[k] || 0))));
     const stepX = n > 1 ? plotW / n : plotW;
-    const barW = Math.max(2, stepX * 0.22);
+    const barW = Math.max(2, stepX * 0.18);
 
     // gridlines + y labels
     ctx.strokeStyle = "#1c1c1c";
@@ -171,13 +206,12 @@
       ctx.fillText(String(Math.round((maxVal * i) / ySteps)), padL - 6, y + 3);
     }
 
-    const seriesColor = { bot_contacts: "#555", registrations: "#ff383e", activations: "#3ddc73" };
-    const order = ["bot_contacts", "registrations", "activations"];
+    const seriesColor = { bot_contacts: "#555", registrations: "#ff383e", activations: "#3ddc73", referrals: "#8a5cff" };
 
     daily.forEach((d, i) => {
-      const groupX = padL + i * stepX + (stepX - barW * 3) / 2;
+      const groupX = padL + i * stepX + (stepX - barW * order.length) / 2;
       order.forEach((key, j) => {
-        const val = d[key];
+        const val = d[key] || 0;
         const h = (val / maxVal) * plotH;
         ctx.fillStyle = seriesColor[key];
         ctx.fillRect(groupX + j * barW, padT + plotH - h, barW - 1, h);
@@ -206,6 +240,7 @@
     try {
       const data = await fetchFunnel(key);
       renderFunnel(data);
+      renderGrowth(data.growth);
       $("chartRange").textContent = `последние ${data.daily.length} дн.`;
       drawChart(data.daily);
       $("content").classList.remove("hidden");

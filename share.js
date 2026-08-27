@@ -34,7 +34,30 @@
   // card layout never has to re-measure text for RU vs EN.
   const METRIC_ORDER=["symmetry","proportion","grooming","hair","skin_appearance","presentation"];
   const METRIC_CODES={symmetry:"SYM",proportion:"PRO",grooming:"GRM",hair:"HAIR",skin_appearance:"SKN",presentation:"PRS"};
-  const shareUrl=()=>location.origin+location.pathname;
+  // Referral link: /api/growth/referral-link returns a personal
+  // t.me/<bot>?start=ref_<id> link (or link:null if TELEGRAM_BOT_USERNAME
+  // isn't configured on the server yet) -- fetched once and cached, kicked
+  // off as soon as a result exists so it's usually already resolved by the
+  // time someone taps a share button. Falls back to the plain app URL (the
+  // old behavior, no attribution) whenever it isn't available.
+  let referralLink=null, referralFetchStarted=false;
+  function ensureReferralLink(){
+    if(referralFetchStarted)return;
+    referralFetchStarted=true;
+    // `api` and `token` come from app.js -- both files are plain classic
+    // <script defer> tags loaded in order, sharing one top-level scope.
+    if(typeof api!=="function")return;
+    api("/api/growth/referral-link").then(r=>{referralLink=r&&r.link||null}).catch(()=>{});
+  }
+  // Fire-and-forget usage counter for the share panel's buttons -- never
+  // blocks or fails the actual share/download/copy action it's attached to.
+  function trackShareClick(channel){
+    try{
+      if(typeof api!=="function")return;
+      api("/api/growth/share-click",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel})}).catch(()=>{});
+    }catch(e){/* never let tracking break the actual share action */}
+  }
+  const shareUrl=()=>referralLink||(location.origin+location.pathname);
   const shareText=()=>{const d=lastResult;const score=d?d.score:Number($("faceScore")?.textContent||0);const tier=d?d.tier:($("type")?.textContent||scoreTier(score));const elo=$("elo")?.textContent||"1000";return t("share_text",score,tier,elo)};
   function telegramUrl(){const text=shareText();return `https://t.me/share/url?url=${encodeURIComponent(shareUrl())}&text=${encodeURIComponent(text)}`}
   function escapeAttr(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]))}
@@ -205,8 +228,8 @@
     const panel=document.createElement("div");panel.id="primeSharePanel";panel.className="card";
     panel.innerHTML=`<div class="section-title"><span>${escapeAttr(t("share_title"))}</span><small>${escapeAttr(t("share_subtitle"))}</small></div><div id="shareCardWrap" class="share-card-wrap"><div class="status">${escapeAttr(t("share_building"))}</div></div><div class="share-actions"><button id="shareDownload" class="primary">${escapeAttr(t("share_btn_download"))}</button><button id="shareNative" class="primary">${escapeAttr(t("share_btn_native"))}</button></div><div class="share-actions" style="margin-top:8px"><button id="shareTelegram" class="secondary">${escapeAttr(t("share_btn_telegram"))}</button><button id="shareCopy" class="secondary">${escapeAttr(t("share_btn_copy"))}</button></div>`;
     result.appendChild(panel);
-    $("shareTelegram").onclick=()=>window.open(telegramUrl(),"_blank");
-    $("shareCopy").onclick=async()=>{try{await navigator.clipboard.writeText(shareText()+`\n${shareUrl()}`);if(window.Telegram?.WebApp?.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");toast(t("share_copied"))}catch(e){toast(t("share_copy_failed"))}};
+    $("shareTelegram").onclick=()=>{trackShareClick("telegram");window.open(telegramUrl(),"_blank")};
+    $("shareCopy").onclick=async()=>{try{await navigator.clipboard.writeText(shareText()+`\n${shareUrl()}`);trackShareClick("copy");if(window.Telegram?.WebApp?.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");toast(t("share_copied"))}catch(e){toast(t("share_copy_failed"))}};
     $("shareDownload").onclick=async()=>{
       const blob=await cardBlob();
       if(!blob)return toast(t("share_card_failed"));
@@ -214,6 +237,7 @@
       const a=document.createElement("a");a.href=url;a.download="prime-score.png";
       document.body.appendChild(a);a.click();a.remove();
       setTimeout(()=>URL.revokeObjectURL(url),4000);
+      trackShareClick("download");
       if(window.Telegram?.WebApp?.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
       toast(t("share_downloaded"));
     };
@@ -227,7 +251,9 @@
           await navigator.share({title:"PRIME Score",text:shareText(),url:shareUrl()});
         }else{
           $("shareDownload").click();
+          return;
         }
+        trackShareClick("native");
       }catch(e){if(e?.name!=="AbortError")toast(t("share_failed"))}
     };
   }
@@ -283,6 +309,7 @@
     lastResult=e.detail;
     withObserverPaused(()=>{render()});
     refreshCard();
+    ensureReferralLink();
   });
   document.addEventListener("DOMContentLoaded",()=>withObserverPaused(()=>{render()}));
   setTimeout(()=>withObserverPaused(()=>{render()}),800);

@@ -221,6 +221,11 @@ import analytics  # noqa: E402,F401
 # paywall on /api/advice and /api/face/compare.
 import payments  # noqa: E402,F401
 
+# Growth tracking: personal referral links (t.me/<bot>?start=ref_<id>),
+# recording who opened the bot via one, and counting taps on the share-card
+# panel's buttons -- surfaced on the /admin funnel page.
+import growth  # noqa: E402,F401
+
 __all__ = ["app"]
 
 if __name__ == "__main__":

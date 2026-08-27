@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import os
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -28,7 +28,34 @@ class AnalyticsEvent(db.Model):
     # actually running an analysis), not to be a general event log.
     event_type = db.Column(db.String(40), nullable=False, index=True)
     telegram_id = db.Column(db.BigInteger, nullable=True, index=True)
+    # Small free-form extra (e.g. which share button was tapped, or the
+    # referrer's telegram id for a referral_start event) -- optional, kept
+    # short on purpose since this is still meant to answer specific business
+    # questions, not become a general event-property store.
+    meta = db.Column(db.String(120), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True, default=lambda: datetime.now(timezone.utc))
+
+
+def _ensure_meta_column():
+    # analytics_event shipped before the `meta` column existed -- same reason
+    # as payments.py's _ensure_lifetime_column: db.create_all() only adds
+    # missing tables/columns for tables it's creating from scratch, it won't
+    # ALTER an already-existing table. Harmless no-op on a fresh database.
+    try:
+        from sqlalchemy import inspect as _sa_inspect
+        with app.app_context():
+            inspector = _sa_inspect(db.engine)
+            if "analytics_event" not in inspector.get_table_names():
+                return
+            columns = {col["name"] for col in inspector.get_columns("analytics_event")}
+            if "meta" not in columns:
+                with db.engine.begin() as conn:
+                    conn.execute(db.text('ALTER TABLE analytics_event ADD COLUMN meta VARCHAR(120)'))
+    except Exception:
+        app.logger.exception("PRIME auto-migrate for analytics_event.meta failed (non-fatal)")
+
+
+_ensure_meta_column()
 
 
 # This table is brand new, so unlike the reminders/face-photo columns there is
@@ -40,12 +67,12 @@ with app.app_context():
     db.create_all()
 
 
-def _log_event(event_type: str, telegram_id=None):
+def _log_event(event_type: str, telegram_id=None, meta=None):
     # Best-effort: analytics must never be able to break the request it's
     # attached to (the Telegram webhook still has to answer Telegram either
     # way), so any failure here is swallowed after logging.
     try:
-        db.session.add(AnalyticsEvent(event_type=event_type, telegram_id=telegram_id))
+        db.session.add(AnalyticsEvent(event_type=event_type, telegram_id=telegram_id, meta=meta))
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -153,13 +180,15 @@ def admin_funnel():
     )
     activated_at = {uid: _aware_utc(ts) for uid, ts in activation_rows}
 
-    def stage(mapping):
-        values = list(mapping.values())
+    def _stats(values):
         return {
             "total": len(values),
             "last7d": sum(1 for ts in values if ts and ts >= cutoff_7),
             "last30d": sum(1 for ts in values if ts and ts >= cutoff_30),
         }
+
+    def stage(mapping):
+        return _stats(list(mapping.values()))
 
     stages = {
         "bot_contacts": stage(first_contact_at),
@@ -172,12 +201,55 @@ def admin_funnel():
         "contact_to_activate": _pct(stages["activations"]["total"], stages["bot_contacts"]["total"]),
     }
 
+    # --- Growth: referral opens (via the personal t.me/<bot>?start=ref_<id>
+    # links generated in growth.py) and in-app "share" button taps. These are
+    # kept separate from the linear contact->register->activate funnel above
+    # (a referral open IS also a bot contact) because the question here is
+    # "is sharing driving new people in", not "how many people overall".
+    referral_rows = (
+        db.session.query(AnalyticsEvent.telegram_id, func.min(AnalyticsEvent.created_at))
+        .filter(AnalyticsEvent.event_type == "referral_start", AnalyticsEvent.telegram_id.isnot(None))
+        .group_by(AnalyticsEvent.telegram_id)
+        .all()
+    )
+    referral_started_at = {tid: _aware_utc(ts) for tid, ts in referral_rows}
+
+    registered_by_telegram_id = {
+        tid: _aware_utc(ts)
+        for tid, ts in User.query.filter(User.telegram_chat_id.isnot(None))
+        .with_entities(User.telegram_chat_id, User.created_at).all()
+    }
+    referred_and_registered = sum(1 for tid in referral_started_at if tid in registered_by_telegram_id)
+
+    share_click_rows = (
+        db.session.query(AnalyticsEvent.created_at, AnalyticsEvent.meta)
+        .filter(AnalyticsEvent.event_type == "share_click")
+        .all()
+    )
+    share_click_timestamps = [_aware_utc(ts) for ts, _ in share_click_rows]
+    share_clicks_by_channel = dict(Counter((meta or "unknown") for _, meta in share_click_rows))
+
+    growth = {
+        "referrals": stage(referral_started_at),
+        "referred_registered": referred_and_registered,
+        "referral_to_register_pct": _pct(referred_and_registered, len(referral_started_at)),
+        "share_clicks": _stats(share_click_timestamps),
+        "share_clicks_by_channel": share_clicks_by_channel,
+    }
+
     days = ANALYTICS_DAILY_DAYS
     contact_buckets = _daily_buckets(first_contact_at.values(), days)
     reg_buckets = _daily_buckets(registered_at.values(), days)
     act_buckets = _daily_buckets(activated_at.values(), days)
+    referral_buckets = _daily_buckets(referral_started_at.values(), days)
     daily = [
-        {"date": day, "bot_contacts": contact_buckets[day], "registrations": reg_buckets[day], "activations": act_buckets[day]}
+        {
+            "date": day,
+            "bot_contacts": contact_buckets[day],
+            "registrations": reg_buckets[day],
+            "activations": act_buckets[day],
+            "referrals": referral_buckets[day],
+        }
         for day in reg_buckets.keys()
     ]
 
@@ -186,5 +258,6 @@ def admin_funnel():
         "tracking_note": "bot_contacts only counts messages received after this feature was deployed",
         "stages": stages,
         "conversion": conversion,
+        "growth": growth,
         "daily": daily,
     })
