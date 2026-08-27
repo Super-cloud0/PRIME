@@ -154,6 +154,7 @@ function go(id) {
   if (id === "music") loadMusic();
   if (id === "face") loadHistories();
   if (id === "leaderboard") loadLeaderboard();
+  if (id === "pro") loadProStatus();
 }
 const input = $("photoInput");
 const preview = $("preview");
@@ -264,6 +265,11 @@ async function runCompare() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ a: { image: dataA, mime: "image/jpeg" }, b: { image: dataB, mime: "image/jpeg" } })
     });
+    if (r.pro_locked) {
+      if ($("compareStatus")) $("compareStatus").textContent = t("compare_locked_status", r.limit);
+      toast(t("compare_locked_toast"));
+      return;
+    }
     if ($("compareResultPhotoA") && previewCompareA) $("compareResultPhotoA").src = previewCompareA.src;
     if ($("compareResultPhotoB") && previewCompareB) $("compareResultPhotoB").src = previewCompareB.src;
     if ($("compareScoreA")) $("compareScoreA").textContent = r.a.score;
@@ -434,6 +440,13 @@ $("musicInput")?.addEventListener("change", async e => { for (const file of e.ta
 async function loadAdvice() {
   try {
     const r = await api("/api/advice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: "Give concise practical advice" }) });
+    if (r.pro_locked) {
+      $("adviceLocked")?.classList.remove("hidden");
+      if ($("adviceFocus")) $("adviceFocus").innerHTML = "";
+      if ($("adviceList")) $("adviceList").innerHTML = "";
+      return;
+    }
+    $("adviceLocked")?.classList.add("hidden");
     const focus = r.focus || [];
     if ($("adviceFocus")) {
       $("adviceFocus").innerHTML = focus.length
@@ -444,6 +457,65 @@ async function loadAdvice() {
   } catch (e) { toast(e.message); }
 }
 $("refreshAdvice")?.addEventListener("click", loadAdvice);
+
+// PRIME Pro: subscription paid with Telegram Stars via
+// Telegram.WebApp.openInvoice -- the invoice link itself is minted
+// server-side (POST /api/pay/create-invoice) so the price and payload
+// signature never live in client code.
+async function loadProStatus() {
+  try {
+    const s = await api("/api/pay/status");
+    if ($("proStatus")) $("proStatus").textContent = s.is_pro
+      ? t("pro_status_active", new Date(s.pro_until).toLocaleDateString("ru-RU"))
+      : t("pro_status_free");
+    if ($("proBenefit2")) $("proBenefit2").textContent = t("pro_benefit_2", s.battle_daily_limit);
+    if ($("proPrice")) $("proPrice").textContent = t("pro_price_label", s.price_stars, s.duration_days);
+    if ($("buyProBtn")) $("buyProBtn").textContent = s.is_pro ? t("pro_buy_btn_renew") : t("pro_buy_btn");
+    if ($("rankLabel") && s.is_pro && !$("rankLabel").textContent.includes("PRO")) {
+      $("rankLabel").textContent = `${$("rankLabel").textContent} · PRO`;
+    }
+    return s;
+  } catch (e) { console.warn("Pro status:", e); return null; }
+}
+
+async function buyPro() {
+  const btn = $("buyProBtn");
+  if (btn) btn.disabled = true;
+  if ($("proStatus")) $("proStatus").textContent = t("pro_buy_pending");
+  try {
+    const r = await api("/api/pay/create-invoice", { method: "POST" });
+    const link = r.invoice_link;
+    const wa = window.Telegram && window.Telegram.WebApp;
+    if (wa && typeof wa.openInvoice === "function") {
+      wa.openInvoice(link, (status) => {
+        if (btn) btn.disabled = false;
+        if (status === "paid") {
+          toast(t("pro_buy_success"));
+          loadProStatus(); loadProfile();
+          if (document.querySelector(".view.active")?.id === "advice") loadAdvice();
+        } else if (status === "cancelled") {
+          toast(t("pro_buy_cancelled"));
+          loadProStatus();
+        } else {
+          loadProStatus();
+        }
+      });
+    } else {
+      // Not running inside Telegram's WebApp (e.g. opened in a plain
+      // browser tab) -- Stars invoice links are also valid t.me links, so
+      // opening one directly still lets Telegram handle the payment.
+      window.open(link, "_blank");
+      if (btn) btn.disabled = false;
+      loadProStatus();
+    }
+  } catch (e) {
+    toast(t("pro_buy_failed", e.message));
+    if ($("proStatus")) $("proStatus").textContent = "";
+    if (btn) btn.disabled = false;
+  }
+}
+$("buyProBtn")?.addEventListener("click", buyPro);
+$("adviceUnlockBtn")?.addEventListener("click", buyPro);
 
 // Re-render whatever the current view already shows (menus, statuses,
 // empty-states) when the language changes -- new fetches naturally come
@@ -461,7 +533,7 @@ document.addEventListener("prime:langchange", () => {
 (async function bootstrap() {
   setAuth(t("auth_connecting"));
   try {
-    if (token) { setAuth(t("auth_restoring")); await withTimeout(loadProfile(), 30000); hideAuth(); await loadEloStatus(); return; }
+    if (token) { setAuth(t("auth_restoring")); await withTimeout(loadProfile(), 30000); hideAuth(); await loadEloStatus(); loadProStatus(); return; }
     await authenticateTelegram();
   } catch (e) { console.error("PRIME bootstrap failed", e); token = ""; safeStorageRemove(tokenKey); showAuth(); setAuth(t("auth_load_error", e.message)); }
 })();

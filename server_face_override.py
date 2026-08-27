@@ -216,6 +216,11 @@ import reminders  # noqa: E402,F401
 # /admin page, plus the bot-contact tracking event the funnel needs.
 import analytics  # noqa: E402,F401
 
+# PRIME Pro subscription paid with Telegram Stars: invoice creation, the
+# pre_checkout_query/successful_payment webhook handling, and the soft
+# paywall on /api/advice and /api/face/compare.
+import payments  # noqa: E402,F401
+
 __all__ = ["app"]
 
 if __name__ == "__main__":

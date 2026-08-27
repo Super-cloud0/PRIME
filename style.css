@@ -50,3 +50,12 @@
 .focus-head b{font-size:12px;font-weight:800;text-transform:capitalize}
 .focus-score{font-size:10px;font-weight:900;color:#ff444b;background:#1a0d0e;border:1px solid #3a171b;border-radius:99px;padding:3px 8px;white-space:nowrap}
 .focus-card p{margin:0;color:#aaa;font-size:11px;line-height:1.6}
+
+/* --- PRIME Pro paywall (upsell view + locked-state card on Advice) --- */
+.pro-benefits{display:flex;flex-direction:column;gap:11px;font-size:12px;color:#eee}
+.pro-benefits div{padding:10px 12px;border:1px solid #242424;border-radius:11px;background:#0d0d0d}
+#proPrice{text-align:center;margin:10px 0;font-size:11px;color:#999;font-weight:700}
+#proStatus{text-align:center;margin-bottom:14px;padding:10px 12px;border:1px solid #242424;border-radius:11px;background:#0d0d0d}
+.pro-locked{text-align:center;border:1px solid #4a1a1f;background:linear-gradient(145deg,#170b0d,#0b0b0b)}
+.pro-locked b{display:block;font-size:13px;margin-bottom:6px}
+.pro-locked p{margin:0 0 12px}
