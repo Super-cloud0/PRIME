@@ -54,6 +54,22 @@
       face_history_sub: "100 последних",
       face_elo_history_title: "ELO история",
       face_elo_history_sub: "100 матчей",
+      progress_title: "Прогресс",
+      progress_sub: "раз в неделю",
+      progress_loading: "Загрузка…",
+      progress_empty: "Пока нет ни одного анализа.",
+      progress_before: "Было",
+      progress_after: "Сейчас",
+      progress_need_more: "Сделай ещё один анализ через неделю, чтобы увидеть прогресс.",
+      progress_span: (weeks) => {
+        const n = Math.abs(Number(weeks) || 0);
+        const mod10 = n % 10, mod100 = n % 100;
+        let word;
+        if (mod10 === 1 && mod100 !== 11) word = "неделю";
+        else if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) word = "недели";
+        else word = "недель";
+        return `За ${n} ${word}`;
+      },
       music_eyebrow: "MOGGER MODE",
       music_title: "Музыка",
       music_sub: "Треки хранятся в твоей персональной библиотеке на сервере.",
@@ -98,7 +114,7 @@
       metric_presentation: "Презентация",
       elo_title: "⚔ PRIME ELO",
       elo_voluntary: "участие добровольное",
-      elo_hint: "Последнее проанализированное фото используется только для ELO-матчей.",
+      elo_hint: "Побледнее проанализированное фото используется только для ELO-матчей.",
       elo_enable: "ВКЛЮЧИТЬ ELO",
       elo_disable: "ВЫКЛЮЧИТЬ ELO",
       elo_checking: "Проверка…",
@@ -193,6 +209,17 @@
       face_history_sub: "last 100",
       face_elo_history_title: "ELO history",
       face_elo_history_sub: "last 100 matches",
+      progress_title: "Progress",
+      progress_sub: "once a week",
+      progress_loading: "Loading…",
+      progress_empty: "No analyses yet.",
+      progress_before: "Before",
+      progress_after: "Now",
+      progress_need_more: "Run another scan next week to start seeing progress.",
+      progress_span: (weeks) => {
+        const n = Math.abs(Number(weeks) || 0);
+        return `Over ${n} week${n === 1 ? "" : "s"}`;
+      },
       music_eyebrow: "MOGGER MODE",
       music_title: "Music",
       music_sub: "Tracks are stored in your personal library on the server.",

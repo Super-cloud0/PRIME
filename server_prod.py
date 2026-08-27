@@ -67,6 +67,12 @@ class FaceAnalysis(db.Model):
     metrics_json = db.Column(db.Text, nullable=False, default="{}")
     tips_json = db.Column(db.Text, nullable=False, default="[]")
     confidence = db.Column(db.Integer, nullable=False, default=0)
+    # Filename of the source photo under MEDIA_ROOT/<user_id>/, nullable because
+    # older rows (analyzed before this column existed) never had one saved.
+    # This is what powers the weekly before/after progress view -- without a
+    # persisted photo per analysis there is nothing to show side by side with
+    # the score history.
+    photo_path = db.Column(db.String(100), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
@@ -91,6 +97,34 @@ class MusicTrack(db.Model):
     mime_type = db.Column(db.String(100), nullable=False)
     size = db.Column(db.Integer, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+def _ensure_face_photo_column():
+    # This deployment's Dockerfile runs gunicorn directly and does not call
+    # `flask db upgrade` on boot (only start_prod.sh/Dockerfile.prod's manual
+    # path does), so a normal Alembic migration alone would silently never
+    # run against the live Render Postgres database and every /api/face-ai
+    # call would 500 the moment code expects a column the table doesn't have.
+    # This best-effort check runs once at import time and adds the column
+    # directly if it's missing, so the feature works whether or not the
+    # migration is ever applied separately. The proper Alembic migration
+    # (migrations/versions/0002_face_photo.py) still exists and should be
+    # run too -- this is a safety net, not a replacement for it.
+    try:
+        from sqlalchemy import inspect as _sa_inspect
+        with app.app_context():
+            inspector = _sa_inspect(db.engine)
+            if "face_analysis" not in inspector.get_table_names():
+                return  # tables not created yet -- db.create_all()/migration will include the column
+            columns = {col["name"] for col in inspector.get_columns("face_analysis")}
+            if "photo_path" not in columns:
+                with db.engine.begin() as conn:
+                    conn.execute(db.text("ALTER TABLE face_analysis ADD COLUMN photo_path VARCHAR(100)"))
+    except Exception:
+        app.logger.exception("PRIME auto-migrate for face_analysis.photo_path failed (non-fatal)")
+
+
+_ensure_face_photo_column()
 
 
 def password_hash(password: str) -> str:
@@ -302,6 +336,25 @@ def gemini_json(prompt: str, image_b64: str | None = None, mime: str = "image/jp
     return extract_json(text)
 
 
+_PHOTO_EXT_BY_MIME = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp"}
+
+
+def _save_face_photo(user_id: str, analysis_id: str, raw: bytes, mime: str) -> str | None:
+    # Best-effort: a failure here must never break the analysis response --
+    # the score/tips are the product, the saved photo only powers the
+    # progress view, so this never raises.
+    try:
+        ext = _PHOTO_EXT_BY_MIME.get((mime or "").lower(), "jpg")
+        stored_name = f"{analysis_id}.{ext}"
+        user_dir = MEDIA_ROOT / user_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        (user_dir / stored_name).write_bytes(raw)
+        return stored_name
+    except Exception:
+        app.logger.exception("PRIME failed to persist face-analysis photo (non-fatal)")
+        return None
+
+
 @app.post("/api/face-ai")
 @auth_required
 @limiter.limit("10 per minute")
@@ -323,11 +376,13 @@ def face_ai(user):
         metrics = {key: max(0, min(100, int(value))) for key, value in (result.get("metrics") or {}).items() if isinstance(value, (int, float))}
         tips = [str(value)[:300] for value in (result.get("tips") or [])[:5]]
         confidence = max(0, min(100, int(result.get("confidence", 0))))
-        analysis = FaceAnalysis(id=str(uuid.uuid4()), user_id=user.id, score=score, analysis_type=str(result.get("type", "HTN"))[:20], summary=str(result.get("summary", ""))[:2000], metrics_json=json.dumps(metrics), tips_json=json.dumps(tips), confidence=confidence)
+        analysis_id = str(uuid.uuid4())
+        photo_path = _save_face_photo(user.id, analysis_id, raw, data.get("mime", "image/jpeg"))
+        analysis = FaceAnalysis(id=analysis_id, user_id=user.id, score=score, analysis_type=str(result.get("type", "HTN"))[:20], summary=str(result.get("summary", ""))[:2000], metrics_json=json.dumps(metrics), tips_json=json.dumps(tips), confidence=confidence, photo_path=photo_path)
         user.prime_score = score
         db.session.add(analysis)
         db.session.commit()
-        result.update({"score": score, "metrics": metrics, "tips": tips, "confidence": confidence, "analysis_id": analysis.id})
+        result.update({"score": score, "metrics": metrics, "tips": tips, "confidence": confidence, "analysis_id": analysis.id, "photo_url": f"/api/face/photo/{analysis.id}" if photo_path else None})
         return jsonify(result)
     except requests.RequestException:
         return jsonify({"error": "AI service temporarily unavailable"}), 502
@@ -339,18 +394,90 @@ def face_ai(user):
 @auth_required
 def face_history(user):
     rows = FaceAnalysis.query.filter_by(user_id=user.id).order_by(desc(FaceAnalysis.created_at)).limit(100).all()
-    return jsonify([{"id": row.id, "score": row.score, "type": row.analysis_type, "summary": row.summary, "metrics": json.loads(row.metrics_json), "tips": json.loads(row.tips_json), "confidence": row.confidence, "created_at": row.created_at.isoformat()} for row in rows])
+    return jsonify([{"id": row.id, "score": row.score, "type": row.analysis_type, "summary": row.summary, "metrics": json.loads(row.metrics_json), "tips": json.loads(row.tips_json), "confidence": row.confidence, "created_at": row.created_at.isoformat(), "photo_url": f"/api/face/photo/{row.id}" if row.photo_path else None} for row in rows])
+
+
+@app.get("/api/face/photo/<analysis_id>")
+@auth_required
+def face_photo(user, analysis_id):
+    row = FaceAnalysis.query.filter_by(id=analysis_id, user_id=user.id).first()
+    if not row or not row.photo_path:
+        return jsonify({"error": "photo not found"}), 404
+    return send_from_directory(MEDIA_ROOT / user.id, row.photo_path, conditional=True)
+
+
+# Metric labels kept here (not just client-side) because they're interpolated
+# straight into the Gemini prompt below -- the model needs readable names,
+# not the raw snake_case keys, to reason about each one specifically.
+_METRIC_LABELS = {
+    "symmetry": "facial symmetry",
+    "proportion": "facial proportion/balance",
+    "grooming": "grooming (eyebrows, facial hair, skincare routine visible in photo)",
+    "hair": "hairstyle/haircut",
+    "skin_appearance": "skin appearance (texture, clarity, tone evenness)",
+    "presentation": "overall presentation (photo angle, lighting, expression, styling)",
+}
 
 
 @app.post("/api/advice")
 @auth_required
 @limiter.limit("20 per minute")
 def advice(user):
-    prompt = f"Give 4 short, safe, practical self-improvement tips based only on this PRIME score: {user.prime_score}. Never diagnose, sexualize, infer sensitive traits, or recommend drugs, starvation, steroids or surgery. Return JSON with a tips array."
+    # Advice used to be generated from nothing but the bare PRIME score
+    # ("Give 4 tips based on score: 62") -- that's disconnected from what's
+    # actually weak on this specific person, so the model had nothing to
+    # reason about and fell back to generic wellness filler (sleep, diet).
+    # This now pulls the user's most recent real analysis (per-metric scores
+    # + the AI's own summary of that photo) and asks for one concrete,
+    # specific routine per weak metric instead of a flat list of platitudes.
+    latest = FaceAnalysis.query.filter_by(user_id=user.id).order_by(desc(FaceAnalysis.created_at)).first()
+    safety_rules = "Never diagnose, sexualize, infer sensitive traits (age, race, ethnicity, health, disability, sexual orientation), or recommend drugs, extreme dieting/starvation, steroids, or surgery. Advice must be safe, realistic, and achievable within a week."
+    if latest is None:
+        prompt = (
+            "The user has not analyzed a photo yet, so give general starter advice for someone about to use a visual "
+            "self-improvement coach: 4 short, concrete, practical tips covering grooming, skincare basics, hair, and how "
+            "to take a good reference photo (lighting/angle) for their first scan. "
+            + safety_rules
+            + ' Return ONLY valid JSON: {"tips": ["...", "...", "...", "..."], "focus": []}'
+        )
+    else:
+        metrics = json.loads(latest.metrics_json) if latest.metrics_json else {}
+        metric_lines = "\n".join(f"- {_METRIC_LABELS.get(key, key)}: {value}/100" for key, value in metrics.items())
+        prompt = f"""You are the PRIME visual self-improvement coach giving a weekly check-in plan for a real analyzed photo.
+
+Scores from the user's most recent analysis (0-100 each):
+{metric_lines}
+
+The AI's summary of that photo: {latest.summary or "(no summary available)"}
+
+Task: for EVERY metric scoring below 60, write one concrete, specific, actionable routine or technique aimed at that exact metric -- name real steps, techniques, or product CATEGORIES (never brand names), not vague filler like "eat healthy" or "sleep well" unless it is the single most relevant lever for that specific metric. If every metric is 60 or above, still include the two lowest-scoring metrics with a brief maintenance/highlighting tip instead. Order the focus list weakest metric first.
+{safety_rules}
+
+Return ONLY valid JSON in this exact shape:
+{{"tips": ["4 to 6 short one-line highlights, punchy and specific"], "focus": [{{"metric": "the metric key exactly as given above (e.g. skin_appearance)", "score": <int>, "action": "2-3 concrete sentences: exact steps/technique for this metric, framed as a one-week routine"}}]}}
+"""
     try:
-        return jsonify(gemini_json(prompt))
+        result = gemini_json(prompt)
+        tips = [str(value)[:220] for value in (result.get("tips") or [])[:6]]
+        focus = []
+        for entry in (result.get("focus") or [])[:6]:
+            if not isinstance(entry, dict):
+                continue
+            metric_key = str(entry.get("metric", ""))[:40]
+            try:
+                score_value = max(0, min(100, int(float(entry.get("score", 0)))))
+            except (TypeError, ValueError):
+                score_value = None
+            focus.append({
+                "metric": metric_key,
+                "label": _METRIC_LABELS.get(metric_key, metric_key.replace("_", " ")),
+                "score": score_value,
+                "action": str(entry.get("action", ""))[:500],
+            })
+        return jsonify({"tips": tips or ["Keep a stable sleep schedule.", "Train consistently rather than chasing extreme routines.", "Focus on grooming and clothing fit.", "Use consistent lighting and angles for photo comparisons."], "focus": focus})
     except Exception:
-        return jsonify({"tips": ["Keep a stable sleep schedule.", "Train consistently rather than chasing extreme routines.", "Focus on grooming and clothing fit.", "Use consistent lighting and angles for photo comparisons."]})
+        app.logger.exception("PRIME advice generation failed; returning fallback")
+        return jsonify({"tips": ["Keep a stable sleep schedule.", "Train consistently rather than chasing extreme routines.", "Focus on grooming and clothing fit.", "Use consistent lighting and angles for photo comparisons."], "focus": []})
 
 
 @app.get("/api/music")

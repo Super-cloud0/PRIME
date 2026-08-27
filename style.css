@@ -22,3 +22,31 @@
 .share-card-wrap .status{padding:26px 10px;text-align:center}
 .share-card-img{display:block;width:100%;height:auto;border-radius:20px}
 .share-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+
+/* --- History list photo thumbnail --- */
+.history-thumb{width:34px;height:34px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#0c0c0c}
+
+/* --- Weekly progress (before/after photos, delta, timeline, trend chart) --- */
+.progress-compare{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-top:2px}
+.progress-photo{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}
+.progress-photo img,.progress-photo-placeholder{width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:#0c0c0c;border:1px solid #242424}
+.progress-photo small{color:#666;font-size:9px;letter-spacing:.03em;text-transform:uppercase}
+.progress-photo b{font-size:18px;font-weight:900}
+.progress-delta{font-weight:900;font-size:15px;padding:5px 9px;border-radius:99px;background:#151515;border:1px solid #2c2c2c;white-space:nowrap}
+.progress-delta.up{color:#3ddc73;border-color:#1d4a2e}
+.progress-delta.down{color:#ff5158;border-color:#4a1a1f}
+.progress-delta.flat{color:#999}
+.progress-note{margin-top:9px;text-align:center}
+.progress-timeline{display:flex;gap:8px;overflow-x:auto;margin-top:14px;padding-bottom:2px}
+.progress-tl-item{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:3px;width:52px;text-align:center}
+.progress-tl-item img,.progress-tl-placeholder{width:44px;height:44px;border-radius:10px;object-fit:cover;background:#0c0c0c;border:1px solid #242424}
+.progress-tl-item b{font-size:11px;font-weight:900}
+.progress-tl-item small{color:#666;font-size:8px}
+.progress-chart{display:block;width:100%;height:90px;margin-top:14px}
+
+/* --- Per-metric focus cards on the Advice tab --- */
+.focus-card{padding:12px 14px}
+.focus-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.focus-head b{font-size:12px;font-weight:800;text-transform:capitalize}
+.focus-score{font-size:10px;font-weight:900;color:#ff444b;background:#1a0d0e;border:1px solid #3a171b;border-radius:99px;padding:3px 8px;white-space:nowrap}
+.focus-card p{margin:0;color:#aaa;font-size:11px;line-height:1.6}

@@ -314,15 +314,109 @@ async function runEloMatch() {
   try { let s = await api("/api/elo/status"); if (!s.enabled) { await toggleElo(); s = await api("/api/elo/status"); if (!s.enabled) return; } if (!lastEloImage) throw new Error(t("err_need_analysis")); const arena = $("eloArena"); arena?.classList.remove("hidden"); if ($("eloResult")) $("eloResult").textContent = t("elo_searching"); const r = await api("/api/elo/match-v2", { method: "POST" }); if ($("eloYouPhoto")) $("eloYouPhoto").src = `data:image/jpeg;base64,${r.you.photo}`; if ($("eloOppPhoto")) $("eloOppPhoto").src = `data:${r.opponent.mime || "image/jpeg"};base64,${r.opponent.photo}`; if ($("eloYouName")) $("eloYouName").textContent = `${r.you.name} • ${r.you.elo_before}`; if ($("eloOppName")) $("eloOppName").textContent = `${r.opponent.name} • ${r.opponent.elo_before}`; if ($("eloResult")) $("eloResult").textContent = t("elo_comparing"); arena?.animate?.([{ transform: "scale(.94)", opacity: .4 }, { transform: "scale(1.03)", opacity: 1 }, { transform: "scale(1)", opacity: 1 }], { duration: 850, easing: "ease-out" }); await new Promise(resolve => setTimeout(resolve, 1000)); const won = r.result === "A", tie = r.result === "TIE"; if ($("eloResult")) $("eloResult").textContent = tie ? t("elo_tie", r.you.elo_after) : won ? t("elo_win", r.you.delta) : t("elo_loss", r.you.delta); await loadProfile(); await loadHistories(); toast(tie ? t("toast_elo_tie") : `${won ? "WIN" : "LOSS"} • ELO ${r.you.elo_after}`); } catch (e) { toast(e.message); if ($("eloResult")) $("eloResult").textContent = e.message; }
 }
 $("addElo")?.addEventListener("click", runEloMatch);
+// ISO-8601 week key ("2026-W07") so multiple check-ins in the same week
+// collapse to one point on the progress timeline/chart instead of making
+// the trend look noisier than it is -- the feature is "score once a week",
+// not "score every time you happen to open the tab".
+function isoWeekKey(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const week = 1 + Math.round(((d - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+function drawProgressChart(scores) {
+  const canvas = $("progressChart");
+  if (!canvas || scores.length < 2) return;
+  const cssWidth = canvas.parentElement?.clientWidth || 300;
+  const cssHeight = 90;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = cssWidth * dpr; canvas.height = cssHeight * dpr;
+  canvas.style.width = `${cssWidth}px`; canvas.style.height = `${cssHeight}px`;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const pad = 14;
+  const min = Math.min(...scores), max = Math.max(...scores);
+  const range = Math.max(1, max - min);
+  const stepX = scores.length > 1 ? (cssWidth - pad * 2) / (scores.length - 1) : 0;
+  const points = scores.map((s, i) => ({ x: pad + i * stepX, y: pad + (1 - (s - min) / range) * (cssHeight - pad * 2) }));
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+  const grad = ctx.createLinearGradient(0, 0, 0, cssHeight);
+  grad.addColorStop(0, "rgba(255,56,62,0.35)"); grad.addColorStop(1, "rgba(255,56,62,0)");
+  ctx.beginPath(); ctx.moveTo(points[0].x, cssHeight - pad);
+  points.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(points[points.length - 1].x, cssHeight - pad); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.beginPath();
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.strokeStyle = "#ff383e"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.stroke();
+  points.forEach((p, i) => {
+    ctx.beginPath(); ctx.arc(p.x, p.y, i === points.length - 1 ? 5 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = i === points.length - 1 ? "#ff383e" : "#fff"; ctx.fill();
+  });
+}
+
+// `rows` is newest-first, straight from /api/face/history.
+function renderProgress(rows) {
+  const wrap = $("progressBody");
+  if (!wrap) return;
+  if (!rows.length) { wrap.innerHTML = `<div class="status">${escapeHtml(t("progress_empty"))}</div>`; return; }
+  const chrono = [...rows].reverse(); // oldest -> newest
+  const weekMap = new Map();
+  chrono.forEach(row => weekMap.set(isoWeekKey(new Date(row.created_at)), row)); // last check-in per week wins, insertion order stays chronological
+  const weekly = [...weekMap.values()];
+  const baseline = chrono[0], current = chrono[chrono.length - 1];
+  const delta = current.score - baseline.score;
+  const deltaClass = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+
+  let compareHtml;
+  if (chrono.length >= 2) {
+    const weeks = Math.max(0, weekly.length - 1);
+    compareHtml = `<div class="progress-compare">
+      <div class="progress-photo">${baseline.photo_url ? `<img src="${baseline.photo_url}" alt="">` : `<div class="progress-photo-placeholder"></div>`}<small>${escapeHtml(t("progress_before"))}</small><b>${baseline.score}</b></div>
+      <div class="progress-delta ${deltaClass}">${delta > 0 ? "+" : ""}${delta}</div>
+      <div class="progress-photo">${current.photo_url ? `<img src="${current.photo_url}" alt="">` : `<div class="progress-photo-placeholder"></div>`}<small>${escapeHtml(t("progress_after"))}</small><b>${current.score}</b></div>
+    </div><div class="muted progress-note">${escapeHtml(t("progress_span", weeks))}</div>`;
+  } else {
+    compareHtml = `<div class="status">${escapeHtml(t("progress_need_more"))}</div>`;
+  }
+
+  const timelineHtml = `<div class="progress-timeline">${rows.slice(0, 12).map(row => `<div class="progress-tl-item">${row.photo_url ? `<img src="${row.photo_url}" alt="">` : `<div class="progress-tl-placeholder"></div>`}<b>${row.score}</b><small>${new Date(row.created_at).toLocaleDateString()}</small></div>`).join("")}</div>`;
+
+  wrap.innerHTML = `${compareHtml}${timelineHtml}<canvas id="progressChart" class="progress-chart"></canvas>`;
+  if (weekly.length >= 2) drawProgressChart(weekly.map(row => row.score));
+}
+
 async function loadHistories() {
-  try { if ($("faceHistory")) { const rows = await api("/api/face/history"); $("faceHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.score}/100 · ${escapeHtml(x.type || tierForScore(x.score))}</b><small>${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : `<div class='muted'>${escapeHtml(t("history_empty"))}</div>`; } if ($("eloHistory")) { const rows = await api("/api/elo/history"); $("eloHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.delta >= 0 ? "+" : ""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : `<div class='muted'>${escapeHtml(t("elo_history_empty"))}</div>`; } await loadEloStatus(); } catch (e) { console.warn("history:", e); }
+  try {
+    if ($("faceHistory")) {
+      const rows = await api("/api/face/history");
+      $("faceHistory").innerHTML = rows.length ? rows.map(x => `<div class="song">${x.photo_url ? `<img class="history-thumb" src="${x.photo_url}" alt="">` : ""}<b>${x.score}/100 · ${escapeHtml(x.type || tierForScore(x.score))}</b><small>${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : `<div class='muted'>${escapeHtml(t("history_empty"))}</div>`;
+      renderProgress(rows);
+    }
+    if ($("eloHistory")) { const rows = await api("/api/elo/history"); $("eloHistory").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>${x.delta >= 0 ? "+" : ""}${x.delta} ELO</b><small>vs ${escapeHtml(x.opponent)} · ${new Date(x.created_at).toLocaleString()}</small></div>`).join("") : `<div class='muted'>${escapeHtml(t("elo_history_empty"))}</div>`; }
+    await loadEloStatus();
+  } catch (e) { console.warn("history:", e); }
 }
 async function loadLeaderboard() { try { const rows = await api("/api/leaderboard"); if ($("leaderboardList")) $("leaderboardList").innerHTML = rows.length ? rows.map(x => `<div class="song"><b>#${x.rank} · ${escapeHtml(x.name)}</b><span>${x.elo} ELO · ${x.prime_score}/100 · ${tierForScore(x.prime_score)} · ${x.wins}W/${x.losses}L</span></div>`).join("") : `<div class='muted'>${escapeHtml(t("leaderboard_empty"))}</div>`; } catch (e) { toast(e.message); } }
 async function loadMusic() { try { tracks = await api("/api/music"); if ($("songs")) $("songs").innerHTML = tracks.length ? tracks.map(tr => `<div class="song"><button data-play="${tr.id}">▶</button><b>${escapeHtml(tr.name)}</b><button data-del="${tr.id}">×</button></div>`).join("") : `<div class='song'>${escapeHtml(t("music_empty"))}</div>`; document.querySelectorAll("[data-play]").forEach(b => b.addEventListener("click", () => playTrack(b.dataset.play))); document.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => { await api(`/api/music/${b.dataset.del}`, { method: "DELETE" }); await loadMusic(); toast(t("toast_track_deleted")); })); } catch (e) { toast(e.message); } }
 async function playTrack(id) { const tr = tracks.find(x => String(x.id) === String(id)); if (!tr) return; if ($("audio")) { $("audio").src = tr.url; $("nowPlaying").textContent = tr.name; await $("audio").play().catch(() => {}); } }
 $("addMusic")?.addEventListener("click", () => $("musicInput")?.click());
 $("musicInput")?.addEventListener("change", async e => { for (const file of e.target.files || []) { const fd = new FormData(); fd.append("file", file); try { await api("/api/music", { method: "POST", body: fd }); } catch (err) { toast(err.message); } } e.target.value = ""; await loadMusic(); });
-async function loadAdvice() { try { const r = await api("/api/advice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: "Give concise practical advice" }) }); if ($("adviceList")) $("adviceList").innerHTML = (r.tips || []).map(x => `<div><b>AI</b><span>${escapeHtml(x)}</span></div>`).join("") || `<div><b>AI</b><span>${escapeHtml(t("advice_empty"))}</span></div>`; } catch (e) { toast(e.message); } }
+async function loadAdvice() {
+  try {
+    const r = await api("/api/advice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: "Give concise practical advice" }) });
+    const focus = r.focus || [];
+    if ($("adviceFocus")) {
+      $("adviceFocus").innerHTML = focus.length
+        ? focus.map(f => `<div class="card focus-card"><div class="focus-head"><b>${escapeHtml(f.label || f.metric || "")}</b>${f.score != null ? `<span class="focus-score">${f.score}/100</span>` : ""}</div><p>${escapeHtml(f.action || "")}</p></div>`).join("")
+        : "";
+    }
+    if ($("adviceList")) $("adviceList").innerHTML = (r.tips || []).map(x => `<div><b>AI</b><span>${escapeHtml(x)}</span></div>`).join("") || `<div><b>AI</b><span>${escapeHtml(t("advice_empty"))}</span></div>`;
+  } catch (e) { toast(e.message); }
+}
 $("refreshAdvice")?.addEventListener("click", loadAdvice);
 
 // Re-render whatever the current view already shows (menus, statuses,
