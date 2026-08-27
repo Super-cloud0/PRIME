@@ -209,6 +209,15 @@ analyze?.addEventListener("click", async () => {
     if ($("scalePos")) $("scalePos").style.left = `${Math.max(0, Math.min(100, Number(r.score)||0))}%`;
     if ($("tips")) $("tips").innerHTML = (r.tips || []).map(x => `<li>${escapeHtml(x)}</li>`).join("");
     if ($("faceStatus")) $("faceStatus").textContent = t("status_analysis_done");
+    // Tell share.js everything it needs to build the downloadable player-card
+    // image (score/tier/metrics + the photo itself) -- the DOM text alone
+    // doesn't carry the per-metric numbers or the photo, so this event is
+    // the single source of truth for that card. Dispatched before the
+    // classList change below so share.js's data is ready by the time its
+    // MutationObserver reacts to #faceResult becoming visible.
+    document.dispatchEvent(new CustomEvent("prime:analysisResult", {
+      detail: { score: r.score, tier: r.type || tierForScore(r.score), metrics: r.metrics || {}, photo: preview?.src || null }
+    }));
     $("faceResult")?.classList.remove("hidden");
     await loadProfile(); await loadHistories();
     toast(t("toast_score", r.score, tierForScore(r.score)));
