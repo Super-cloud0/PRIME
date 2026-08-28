@@ -7,6 +7,7 @@ from functools import wraps
 
 from flask import jsonify, request
 
+import analytics
 import server as server_module
 import server_prod
 from server_prod import User, auth_required
@@ -376,3 +377,71 @@ def _compare_with_daily_limit():
 
 if _original_compare is not None:
     app.view_functions["face_compare"] = _compare_with_daily_limit
+
+
+# --- Admin: revenue summary -------------------------------------------
+# Separate from /api/admin/funnel (analytics.py) on purpose -- that endpoint
+# answers "how many people move through the product", this one answers "how
+# much money actually came in". Reads straight from StarPayment/
+# ProSubscription, the same tables every payment already writes to, so this
+# is authoritative even if BotFather's own UI is confusing (its "Payments"
+# menu is for connecting a traditional provider like Stripe -- irrelevant
+# for a Stars-only bot, which is why it shows "no payment methods
+# connected" there even though Stars payments work fine).
+@app.get("/api/admin/payments")
+@analytics.admin_required
+def admin_payments():
+    now = datetime.now(timezone.utc)
+    cutoff_7 = now - timedelta(days=7)
+    cutoff_30 = now - timedelta(days=30)
+
+    rows = StarPayment.query.order_by(StarPayment.created_at.desc()).all()
+
+    def _is_lifetime_payload(payload: str) -> bool:
+        return payload.startswith(LIFETIME_INVOICE_PAYLOAD_PREFIX + ":")
+
+    def _sum(predicate):
+        return sum(p.amount_stars for p in rows if predicate(p))
+
+    def _count(predicate):
+        return sum(1 for p in rows if predicate(p))
+
+    ts = lambda p: _aware_utc(p.created_at)  # noqa: E731
+
+    revenue_stars = {
+        "total": _sum(lambda p: True),
+        "last7d": _sum(lambda p: ts(p) and ts(p) >= cutoff_7),
+        "last30d": _sum(lambda p: ts(p) and ts(p) >= cutoff_30),
+    }
+    payments_count = {
+        "total": len(rows),
+        "last7d": _count(lambda p: ts(p) and ts(p) >= cutoff_7),
+        "last30d": _count(lambda p: ts(p) and ts(p) >= cutoff_30),
+    }
+    plan_breakdown = {
+        "weekly": _count(lambda p: not _is_lifetime_payload(p.invoice_payload)),
+        "lifetime": _count(lambda p: _is_lifetime_payload(p.invoice_payload)),
+    }
+
+    subs = ProSubscription.query.all()
+    active_subscribers = sum(1 for s in subs if _aware_utc(s.pro_until) and _aware_utc(s.pro_until) > now)
+    lifetime_holders = sum(1 for s in subs if s.is_lifetime)
+
+    recent_payments = [
+        {
+            "amount_stars": p.amount_stars,
+            "plan": "lifetime" if _is_lifetime_payload(p.invoice_payload) else "weekly",
+            "created_at": ts(p).isoformat() if ts(p) else None,
+        }
+        for p in rows[:20]
+    ]
+
+    return jsonify({
+        "generated_at": now.isoformat(),
+        "revenue_stars": revenue_stars,
+        "payments_count": payments_count,
+        "plan_breakdown": plan_breakdown,
+        "active_subscribers": active_subscribers,
+        "lifetime_holders": lifetime_holders,
+        "recent_payments": recent_payments,
+    })

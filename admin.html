@@ -60,6 +60,13 @@
   .channel-list b{color:#ccc;font-weight:800}
   .channel-chip{border:1px solid var(--line);background:var(--card2);border-radius:99px;padding:5px 11px}
   .growth-empty{font-size:11px;color:var(--muted);text-align:center;padding:10px 0}
+  .revenue-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+  .revenue-item{border:1px solid var(--line);background:var(--card2);border-radius:11px;padding:12px 10px;text-align:center}
+  .revenue-item b{display:block;font-size:22px;font-weight:900;color:var(--green);letter-spacing:-.5px}
+  .revenue-item span{display:block;font-size:9px;color:var(--muted);margin-top:4px;line-height:1.35}
+  .recent-payments{margin-top:4px}
+  .recent-payment-row{display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid var(--line);font-size:11px;color:#ccc}
+  .recent-payment-row small{color:var(--muted);font-size:9px}
 </style>
 </head>
 <body>
@@ -94,6 +101,11 @@
     </div>
 
     <div class="card">
+      <div class="section-title"><span>Выручка &middot; PRIME Pro</span></div>
+      <div id="revenueStats"></div>
+    </div>
+
+    <div class="card">
       <div class="section-title"><span>Рост &middot; рефералка и шеринг</span></div>
       <div id="growthStats"></div>
     </div>
@@ -116,6 +128,33 @@
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
     return data;
+  }
+
+  async function fetchPayments(key) {
+    const res = await fetch("/api/admin/payments", { headers: { "X-Admin-Secret": key }, cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+    return data;
+  }
+
+  function renderRevenue(rev) {
+    if (!rev) { $("revenueStats").innerHTML = `<div class="growth-empty">Нет данных</div>`; return; }
+    const planLine = `Подписка: ${fmt(rev.plan_breakdown.weekly)} &middot; Навсегда: ${fmt(rev.plan_breakdown.lifetime)}`;
+    const recentHtml = rev.recent_payments.length
+      ? `<div class="recent-payments">${rev.recent_payments.map(p => {
+          const d = p.created_at ? new Date(p.created_at).toLocaleString("ru-RU") : "";
+          const planLabel = p.plan === "lifetime" ? "Навсегда" : "Подписка";
+          return `<div class="recent-payment-row"><span>${fmt(p.amount_stars)} ⭐ &middot; ${planLabel}</span><small>${d}</small></div>`;
+        }).join("")}</div>`
+      : `<div class="growth-empty">Платежей пока не было</div>`;
+    $("revenueStats").innerHTML = `
+      <div class="revenue-grid">
+        <div class="revenue-item"><b>${fmt(rev.revenue_stars.total)} ⭐</b><span>всего заработано (7д: ${fmt(rev.revenue_stars.last7d)})</span></div>
+        <div class="revenue-item"><b>${fmt(rev.payments_count.total)}</b><span>платежей (7д: ${fmt(rev.payments_count.last7d)})</span></div>
+        <div class="revenue-item"><b>${fmt(rev.active_subscribers)}</b><span>активных Pro (навсегда: ${fmt(rev.lifetime_holders)})</span></div>
+      </div>
+      <div class="note" style="margin:0 0 10px">${planLine}</div>
+      ${recentHtml}`;
   }
 
   function renderStage(name, stage, prevTotal) {
@@ -241,6 +280,12 @@
       const data = await fetchFunnel(key);
       renderFunnel(data);
       renderGrowth(data.growth);
+      try {
+        const rev = await fetchPayments(key);
+        renderRevenue(rev);
+      } catch (e) {
+        $("revenueStats").innerHTML = `<div class="growth-empty">Не удалось загрузить: ${e.message}</div>`;
+      }
       $("chartRange").textContent = `последние ${data.daily.length} дн.`;
       drawChart(data.daily);
       $("content").classList.remove("hidden");
